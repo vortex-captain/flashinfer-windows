@@ -67,7 +67,17 @@ def find_loaded_library(lib_name) -> Optional[str]:
             cudart_version = torch_version.cuda.split(".")[0]
             if cudart_version < "12":
                 cudart_version += "0"
-            dll_bin_path = os.path.join(cuda_path, "bin", "x64") if os.path.exists(os.path.join(cuda_path, "bin", "x64")) else os.path.join(cuda_path, "bin")
+            cuda_arch = (
+                "arm64"
+                if platform.machine().lower() in ("arm64", "aarch64")
+                else "x64"
+            )
+            arch_bin_path = os.path.join(cuda_path, "bin", cuda_arch)
+            dll_bin_path = (
+                arch_bin_path
+                if os.path.exists(arch_bin_path)
+                else os.path.join(cuda_path, "bin")
+            )
             return os.path.join(dll_bin_path, f"cudart64_{cudart_version}.dll")
         else:
             raise ValueError(

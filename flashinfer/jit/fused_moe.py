@@ -14,7 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from typing import List
+from pathlib import Path
+from typing import List, Optional
 
 from . import env as jit_env
 from ..artifacts import ArtifactPath, CheckSumHash
@@ -25,7 +26,7 @@ from .core import (
     sm90a_nvcc_flags,
     sm89_nvcc_flags,
 )
-from .cpp_ext import is_cuda_version_at_least
+from .cpp_ext import is_cuda_version_at_least, is_windows
 from .cubin_loader import (
     get_artifact,
     get_meta_hash,
@@ -33,6 +34,7 @@ from .cubin_loader import (
     verify_symlinked_headers,
 )
 from .gemm.cutlass.generate_kernels import generate_gemm_operations
+from .utils import write_if_different
 
 BMM_EXPORT_HEADERS = [
     "BatchedGemmEnums.h",
@@ -53,6 +55,48 @@ BMM_EXPORT_HEADERS = [
     "trtllm/gen/SfLayoutDecl.h",
     "trtllm/gen/SparsityDecl.h",
 ]
+
+
+def _get_windows_bmm_header_overlay(
+    source_root: Path,
+) -> Optional[Path]:
+    if not is_windows:
+        return None
+
+    overlay_root = (
+        jit_env.FLASHINFER_GEN_SRC_DIR
+        / "fused_moe_trtllm_sm100"
+        / "windows_bmm_header_overlay"
+    )
+    old_declaration = "constexpr unsigned long XLargeN = 1UL << 35;"
+    new_declaration = (
+        "constexpr unsigned long long XLargeN = 1ULL << 35;"
+    )
+
+    for header in BMM_EXPORT_HEADERS:
+        source = source_root / header
+        content = source.read_text()
+        if header == "trtllm/gen/CommonUtils.h":
+            old_count = content.count(old_declaration)
+            new_count = content.count(new_declaration)
+            if old_count == 1 and new_count == 0:
+                content = content.replace(old_declaration, new_declaration)
+            elif old_count != 0 or new_count != 1:
+                raise RuntimeError(
+                    f"Unexpected XLargeN declaration in {source}"
+                )
+
+        destination = (
+            overlay_root
+            / "flashinfer"
+            / "trtllm"
+            / "batched_gemm"
+            / "trtllmGen_bmm_export"
+            / header
+        )
+        write_if_different(destination, content)
+
+    return overlay_root
 
 
 def gen_cutlass_fused_moe_sm120_module(use_fast_build: bool = False) -> JitSpec:
@@ -269,15 +313,27 @@ def gen_trtllm_gen_fused_moe_sm100_module() -> JitSpec:
     for header in BMM_EXPORT_HEADERS:
         h = get_artifact(f"{bmm_export_path}/{header}", get_meta_hash(checksum, header))
         assert h, f"{header} not found"
-    symlink_path = (
-        jit_env.FLASHINFER_CUBIN_DIR
-        / "flashinfer"
-        / "trtllm"
-        / "batched_gemm"
-        / "trtllmGen_bmm_export"
-    )
-    ensure_symlink(symlink_path, jit_env.FLASHINFER_CUBIN_DIR / bmm_export_path)
-    verify_symlinked_headers(symlink_path, BMM_EXPORT_HEADERS, checksum)
+    canonical_export_path = jit_env.FLASHINFER_CUBIN_DIR / bmm_export_path
+    if is_windows:
+        verify_symlinked_headers(
+            canonical_export_path, BMM_EXPORT_HEADERS, checksum
+        )
+        windows_header_overlay = _get_windows_bmm_header_overlay(
+            canonical_export_path
+        )
+    else:
+        symlink_path = (
+            jit_env.FLASHINFER_CUBIN_DIR
+            / "flashinfer"
+            / "trtllm"
+            / "batched_gemm"
+            / "trtllmGen_bmm_export"
+        )
+        ensure_symlink(symlink_path, canonical_export_path)
+        verify_symlinked_headers(
+            symlink_path, BMM_EXPORT_HEADERS, checksum
+        )
+        windows_header_overlay = None
 
     # currently only support Blackwell
     nvcc_flags = current_compilation_context.get_nvcc_flags_list(
@@ -319,6 +375,11 @@ def gen_trtllm_gen_fused_moe_sm100_module() -> JitSpec:
         ]
         + nvcc_flags,
         extra_include_paths=[
+            *(
+                [windows_header_overlay]
+                if windows_header_overlay is not None
+                else []
+            ),
             jit_env.FLASHINFER_CUBIN_DIR,
             jit_env.FLASHINFER_CUBIN_DIR / include_path,
             jit_env.FLASHINFER_CSRC_DIR / "nv_internal",

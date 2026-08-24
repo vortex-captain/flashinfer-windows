@@ -15,6 +15,7 @@ limitations under the License.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,10 @@ from build_utils import get_git_version
 
 _root = Path(__file__).parent.resolve()
 _data_dir = _root / "flashinfer" / "data"
+_CCCL_HEADER = Path(
+    "cccl/libcudacxx/include/cuda/__ptx/instructions/generated/tcgen05_ld.h"
+)
+_EXPECTED_CCCL_OUT_TOKENS = 6736
 
 
 # moe_ep build infra. Three opt-in switches, all `0` by default:
@@ -896,6 +901,28 @@ def _create_data_dir(use_symlinks=True):
     ln("include", "include")
 
 
+def _patch_packaged_cccl_for_windows() -> None:
+    header = _data_dir / _CCCL_HEADER
+    content = header.read_text(encoding="utf-8")
+    if re.search(r"^\s*#\s*define\s+__out\b", content, re.MULTILINE):
+        raise RuntimeError(f"Unexpected __out macro definition in {header}")
+    if re.search(r"\b__cccl_out\b", content):
+        raise RuntimeError(f"Replacement identifier already exists in {header}")
+
+    count = len(re.findall(r"\b__out\b", content))
+    if count != _EXPECTED_CCCL_OUT_TOKENS:
+        raise RuntimeError(
+            f"Expected {_EXPECTED_CCCL_OUT_TOKENS} __out tokens in {header}, "
+            f"found {count}"
+        )
+
+    header.write_text(
+        re.sub(r"\b__out\b", "__cccl_out", content),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
 def _prepare_for_wheel():
     # For wheel, copy actual files instead of symlinks so they are included in the wheel
     _install_cuda_tile_compile_deps()
@@ -903,6 +930,7 @@ def _prepare_for_wheel():
     if _data_dir.exists():
         shutil.rmtree(_data_dir)
     _create_data_dir(use_symlinks=False)
+    _patch_packaged_cccl_for_windows()
 
     # Copy license files from licenses/ to root to avoid nested path in wheel
     licenses_dir = _root / "licenses"
