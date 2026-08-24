@@ -3,6 +3,7 @@
 import functools
 import logging
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -17,6 +18,7 @@ import torch
 from . import env as jit_env
 from ..compilation_context import CompilationContext
 
+is_windows = platform.system() == "Windows"
 logger = logging.getLogger(__name__)
 
 
@@ -38,7 +40,7 @@ def parse_env_flags(env_var_name) -> List[str]:
 
 
 def _get_glibcxx_abi_build_flags() -> List[str]:
-    glibcxx_abi_cflags = [
+    glibcxx_abi_cflags = [] if is_windows else [
         "-D_GLIBCXX_USE_CXX11_ABI=" + str(int(torch._C._GLIBCXX_USE_CXX11_ABI))
     ]
     return glibcxx_abi_cflags
@@ -161,8 +163,12 @@ def build_common_cflags(
     # internally to suppress warnings. See https://github.com/NVIDIA/cccl/issues/527
     for cccl_dir in cccl_includes:
         common_cflags.append(f"-I{cccl_dir}")
-    for sys_dir in system_includes:
-        common_cflags.append(f"-isystem {sys_dir}")
+    if is_windows:
+        for sys_dir in system_includes:
+            common_cflags.append(f"-I{sys_dir}")
+    else:
+        for sys_dir in system_includes:
+            common_cflags.append(f"-isystem {sys_dir}")
 
     return common_cflags
 
@@ -174,8 +180,15 @@ def build_cflags(
     """Build C++ compilation flags."""
     cflags = [
         "$common_cflags",
-        "-fPIC",
     ]
+
+    if not is_windows:
+        cflags.append("-fPIC")
+    else:
+        cflags.append("/std:c++20")
+        cflags.append("/DNOMINMAX")
+        cflags.append("/Zc:preprocessor")
+
     if extra_cflags is not None:
         cflags += extra_cflags
 
@@ -183,23 +196,38 @@ def build_cflags(
     if env_extra_cflags is not None:
         cflags += env_extra_cflags
 
+    cflags = list(set(cflags))
+
     return cflags
 
 
 def build_cuda_cflags(
     common_cflags: List[str],
     extra_cuda_cflags: Optional[List[str]] = None,
-) -> List[str]:
+) -> tuple[List[str], List[str]]:
     """Build CUDA compilation flags."""
     cuda_cflags: List[str] = []
     cc_env = os.environ.get("CC")
     if cc_env is not None:
         cuda_cflags += ["-ccbin", cc_env]
-    cuda_cflags += [
-        "$common_cflags",
-        "--compiler-options=-fPIC",
-        "--expt-relaxed-constexpr",
-    ]
+    common_cuda_flags  = common_cflags.copy()
+
+    if is_windows:
+        common_cuda_flags  = [
+            "DTORCH_EXTENSION_NAME=$name",
+            "-Xcompiler /Zc:__cplusplus",
+            "-Xcompiler /Zc:preprocessor",
+            "--std=c++20"
+        ] + common_cuda_flags [1:]
+
+    if is_windows:
+        cuda_cflags += ["$common_cuda_flags", "--expt-relaxed-constexpr"]
+    else:
+        cuda_cflags += [
+            "$common_cflags",
+            "--compiler-options=-fPIC",
+            "--expt-relaxed-constexpr",
+        ]
     cuda_version = get_cuda_version()
     # enable -static-global-template-stub when cuda version >= 12.8
     if cuda_version >= Version("12.8"):
@@ -234,7 +262,7 @@ def build_cuda_cflags(
     if env_extra_cuda_cflags is not None:
         cuda_cflags += env_extra_cuda_cflags
 
-    return cuda_cflags
+    return cuda_cflags, common_cuda_flags
 
 
 def generate_ninja_build_for_op(
@@ -250,29 +278,95 @@ def generate_ninja_build_for_op(
     cuda_home = get_cuda_path()
     common_cflags = build_common_cflags(cuda_home, extra_include_dirs)
     cflags = build_cflags(common_cflags, extra_cflags)
-    cuda_cflags = build_cuda_cflags(common_cflags, extra_cuda_cflags)
+    cuda_cflags, common_cuda_flags = build_cuda_cflags(common_cflags, extra_cuda_cflags)
     cuda_arch_flags = [flag for flag in cuda_cflags if flag.startswith("-gencode=")]
 
-    ldflags = [
-        "-shared",
-        "-L$cuda_home/lib64",
-        "-L$cuda_home/lib64/stubs",
-        "-lcudart",
-        "-lcuda",
-    ]
+    if is_windows:
+        python_path = os.path.dirname(sys.executable)
+        if python_path.endswith("\\Scripts"):
+            python_path = os.path.dirname(python_path)
+        python_lib_path = os.path.join(sys.base_exec_prefix, "libs")
+        ldflags = [
+            f"/LIBPATH:{python_lib_path}",
+            "/LIBPATH:$cuda_home\\lib\\x64",
+            f"/LIBPATH:{python_path}\\Lib\\site-packages\\tvm_ffi\\lib",
+            f"/LIBPATH:{python_path}\\Lib\\site-packages\\torch\\lib",
+            "c10.lib",
+            "c10_cuda.lib",
+            "torch.lib",
+            "torch_cuda.lib",
+            "cudart.lib",
+            "cuda.lib",
+            "tvm_ffi.lib",
+            "torch_python.lib",
+        ]
+    else:
+        ldflags = [
+            "-shared",
+            "-L$cuda_home/lib64",
+            "-L$cuda_home/lib64/stubs",
+            "-lcudart",
+            "-lcuda",
+        ]
 
     env_extra_ldflags = parse_env_flags("FLASHINFER_EXTRA_LDFLAGS")
     if env_extra_ldflags is not None:
         ldflags += env_extra_ldflags
 
     if extra_ldflags is not None:
-        ldflags += extra_ldflags
+        if is_windows:
+            for ldflag in extra_ldflags:
+                if ldflag.startswith("-l"):
+                    ldflag = ldflag[2:] + ".lib"
+                ldflags.append(ldflag)
+        else:
+            ldflags += extra_ldflags
+
+    if is_windows and needs_device_linking:
+        ldflags = [
+            f'-L"{flag[len("/LIBPATH:"):]}"' if flag.startswith("/LIBPATH:") else flag
+            for flag in ldflags
+        ]
 
     cxx = os.environ.get("CXX", "c++")
     nvcc = os.environ.get("FLASHINFER_NVCC", "$cuda_home/bin/nvcc")
     # Compiler launchers (e.g., sccache, ccache) — empty string when unset
     cxx_launcher = os.environ.get("FLASHINFER_CXX_LAUNCHER", "")
     nvcc_launcher = os.environ.get("FLASHINFER_NVCC_LAUNCHER", "")
+
+    if is_windows:
+        rule_compile = [
+            "rule compile",
+            "  command = cl.exe $cflags -c $in /Fo$out $post_cflags",
+            "  deps = msvc",
+        ]
+        rule_cuda_compile = [
+            "rule cuda_compile",
+            "  command = $nvcc --generate-dependencies-with-compile -MF $out.d -$cuda_cflags -c $in -o $out $cuda_post_cflags",
+            "  depfile = $out.d",
+            "  deps = msvc",
+        ]
+        rule_link = [
+            "rule link",
+            "  command = link.exe /DLL $in /nologo $ldflags /out:$out",
+        ]
+    else:
+        rule_compile = [
+            "rule compile",
+            "  command = $cxx_launcher $cxx -MMD -MF $out.d $cflags -c $in -o $out $post_cflags",
+            "  depfile = $out.d",
+            "  deps = gcc",
+        ]
+        rule_cuda_compile = [
+            "rule cuda_compile",
+            "  command = $nvcc_launcher $nvcc --generate-dependencies-with-compile -MF $out.d $cuda_cflags -c $in -o $out $cuda_post_cflags",
+            "  depfile = $out.d",
+            "  deps = gcc",
+        ]
+        rule_link = [
+            "rule link",
+            "  command = $cxx $in $ldflags -o $out",
+        ]
 
     lines = [
         "ninja_required_version = 1.3",
@@ -284,6 +378,7 @@ def generate_ninja_build_for_op(
         f"nvcc_launcher = {nvcc_launcher}",
         "",
         "common_cflags = " + join_multiline(common_cflags),
+        "common_cuda_flags = " + join_multiline(common_cuda_flags),
         "cflags = " + join_multiline(cflags),
         "post_cflags =",
         "cuda_cflags = " + join_multiline(cuda_cflags),
@@ -291,15 +386,9 @@ def generate_ninja_build_for_op(
         "cuda_arch_flags = " + join_multiline(cuda_arch_flags),
         "ldflags = " + join_multiline(ldflags),
         "",
-        "rule compile",
-        "  command = $cxx_launcher $cxx -MMD -MF $out.d $cflags -c $in -o $out $post_cflags",
-        "  depfile = $out.d",
-        "  deps = gcc",
+        *rule_compile,
         "",
-        "rule cuda_compile",
-        "  command = $nvcc_launcher $nvcc --generate-dependencies-with-compile -MF $out.d $cuda_cflags -c $in -o $out $cuda_post_cflags",
-        "  depfile = $out.d",
-        "  deps = gcc",
+        *rule_cuda_compile,
         "",
     ]
 
@@ -325,8 +414,7 @@ def generate_ninja_build_for_op(
     else:
         lines.extend(
             [
-                "rule link",
-                "  command = $cxx $in $ldflags -o $out",
+                *rule_link,
                 "",
             ]
         )
@@ -342,9 +430,12 @@ def generate_ninja_build_for_op(
         object_suffix = ".cuda.o" if is_cuda else ".o"
         cmd = "cuda_compile" if is_cuda else "compile"
         obj_name = f"{source.parent.name}_{source.stem}{object_suffix}"
-        obj = str((output_dir / obj_name).resolve())
+        obj = str((output_dir / obj_name).resolve()).replace(":\\", "$:\\")
         objects.append(obj)
-        lines.append(f"build {obj}: {cmd} {source.resolve()}")
+        source_path = source.resolve()
+        if is_windows:
+            source_path = str(source_path).replace(":\\", "$:\\")
+        lines.append(f"build {obj}: {cmd} {source_path}")
 
     if embedded_cubins:
         if not objects:
@@ -359,9 +450,13 @@ def generate_ninja_build_for_op(
             embedded_obj = str(
                 (output_dir / f"embedded_{index}_{Path(current_obj).name}").resolve()
             )
+            cubin_dependency = str(resolved_cubin)
+            if is_windows:
+                embedded_obj = embedded_obj.replace(":\\", "$:\\")
+                cubin_dependency = cubin_dependency.replace(":\\", "$:\\")
             lines.extend(
                 [
-                    f"build {embedded_obj}: embed_cubin {current_obj} | {resolved_cubin}",
+                    f"build {embedded_obj}: embed_cubin {current_obj} | {cubin_dependency}",
                     f"  cubin = {resolved_cubin}",
                     f"  cubin_name = {cubin_name}",
                 ]
@@ -371,9 +466,14 @@ def generate_ninja_build_for_op(
 
     lines.append("")
     link_rule = "nvcc_link" if needs_device_linking else "link"
-    output_so = str((output_dir / f"{name}.so").resolve())
-    lines.append(f"build {output_so}: {link_rule} " + " ".join(objects))
-    lines.append(f"default {output_so}")
+    if is_windows:
+        output_so = str((output_dir / f"{name}.dll").resolve()).replace(":\\", "$:\\")
+        lines.append(f"build {output_so}: {link_rule} " + " ".join(objects))
+        lines.append(f"default {output_so}")
+    else:
+        output_so = str((output_dir / f"{name}.so").resolve())
+        lines.append(f"build {output_so}: {link_rule} " + " ".join(objects))
+        lines.append(f"default {output_so}")
     lines.append("")
 
     return "\n".join(lines)

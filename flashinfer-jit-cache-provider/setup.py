@@ -1,11 +1,14 @@
 """Setuptools configuration for one architecture-specific provider wheel."""
 
+import platform
+
 from setuptools import setup
 
 from package_config import get_provider_build_config
 
 
 config = get_provider_build_config()
+library_suffix = ".dll" if platform.system() == "Windows" else ".so"
 
 setup(
     name=config.distribution,
@@ -17,7 +20,7 @@ setup(
     python_requires=">=3.9",
     packages=[config.package],
     package_dir={config.package: "flashinfer_jit_cache_provider"},
-    package_data={config.package: ["manifest.json", "jit_cache/**/*.so"]},
+    package_data={config.package: ["manifest.json", f"jit_cache/**/*{library_suffix}"]},
     include_package_data=False,
     zip_safe=False,
     entry_points={

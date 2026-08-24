@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import sys
+import zipfile
 from copy import deepcopy
 from pathlib import Path
 
@@ -148,6 +149,85 @@ def test_release_verifier_requires_exact_provider_set(release_verifier_module):
             {"sm80", "sm90a"},
             "manylinux_2_28_aarch64",
         )
+
+
+@pytest.mark.parametrize(
+    ("platform_tag", "suffix"),
+    [("win_arm64", ".dll"), ("win_amd64", ".dll"), ("manylinux_2_28_aarch64", ".so")],
+)
+def test_provider_shared_library_suffix(
+    tmp_path, release_verifier_module, platform_tag, suffix
+):
+    version = "0.6.18+cu134"
+    provider = "sm103a"
+    prefix = f"flashinfer_jit_cache/providers/{provider}"
+    dist_info = f"flashinfer_jit_cache_{provider}-{version}.dist-info"
+    path = tmp_path / (
+        f"flashinfer_jit_cache_{provider}-{version}-cp39-abi3-{platform_tag}.whl"
+    )
+    manifest = {
+        "schema_version": 1,
+        "provider_id": provider,
+        "distribution": f"flashinfer-jit-cache-{provider}",
+        "version": version,
+        "cuda_architectures": [provider],
+        "modules": ["example"],
+    }
+    for actual_suffix in (suffix, ".so" if suffix == ".dll" else ".dll"):
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr(
+                f"{dist_info}/METADATA",
+                f"Name: flashinfer-jit-cache-{provider}\nVersion: {version}\n",
+            )
+            archive.writestr(
+                f"{dist_info}/entry_points.txt",
+                "[flashinfer.jit_cache.providers]\n"
+                f"{provider} = flashinfer_jit_cache.providers.{provider}:get_provider\n",
+            )
+            archive.writestr(f"{prefix}/manifest.json", json.dumps(manifest))
+            archive.writestr(f"{prefix}/jit_cache/example/example{actual_suffix}", b"")
+        wheel = release_verifier_module.Wheel.open(path)
+        if actual_suffix == suffix:
+            _, modules = release_verifier_module.validate_provider(
+                wheel, provider, version, platform_tag
+            )
+            assert modules == {"example": f"{prefix}/jit_cache/example/example{suffix}"}
+        else:
+            with pytest.raises(ValueError, match="contains no shared libraries"):
+                release_verifier_module.validate_provider(
+                    wheel, provider, version, platform_tag
+                )
+
+
+@pytest.mark.parametrize("suffix", [".so", ".dll"])
+def test_shim_rejects_native_libraries(release_verifier_module, suffix):
+    shim = release_verifier_module.Wheel(
+        path=Path("flashinfer_jit_cache-0.6.18-cp39-abi3-win_arm64.whl"),
+        distribution="flashinfer-jit-cache",
+        version="0.6.18",
+        requirements=(),
+        contents=(f"flashinfer_jit_cache/jit_cache/example/example{suffix}",),
+        metadata_path="flashinfer_jit_cache-0.6.18.dist-info/METADATA",
+    )
+    with pytest.raises(ValueError, match="must not contain shared libraries"):
+        release_verifier_module.validate_shim(shim, "0.6.18", set())
+
+
+@pytest.mark.parametrize(
+    "requirement",
+    [
+        'nvidia-cutlass-dsl>=4.6.1; sys_platform != "win32"',
+        'nvidia-cutlass-dsl>=4.6.2a0; sys_platform == "win32"',
+    ],
+)
+def test_dependency_policy_does_not_relax_floor_or_marker(
+    cuda_config_module, tmp_path, requirement
+):
+    config = json.loads((REPO_ROOT / "ci" / "cuda-versions.json").read_text())
+    (tmp_path / "requirements.txt").write_text(requirement + "\n")
+    (tmp_path / "pyproject.toml").write_text((REPO_ROOT / "pyproject.toml").read_text())
+    with pytest.raises(cuda_config_module.ConfigError, match="provider-build floor"):
+        cuda_config_module._validate_dependency_policy(config, tmp_path, {"12", "13"})
 
 
 @pytest.mark.parametrize(

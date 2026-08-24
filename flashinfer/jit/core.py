@@ -3,6 +3,7 @@ import dataclasses
 import functools
 import logging
 import os
+import platform
 import threading
 from contextlib import nullcontext
 from datetime import datetime
@@ -458,7 +459,8 @@ class JitSpecNvcc(JitSpec):
 
     @property
     def jit_library_path(self) -> Path:
-        return jit_env.FLASHINFER_JIT_DIR / self.name / f"{self.name}.so"
+        suffix = ".dll" if platform.system() == "Windows" else ".so"
+        return jit_env.FLASHINFER_JIT_DIR / self.name / f"{self.name}{suffix}"
 
     def get_library_path(self) -> Path:
         if self.is_aot:
@@ -616,15 +618,17 @@ class JitSpecNvcc(JitSpec):
         # Build flags
         common_cflags = build_common_cflags(cuda_home, self.extra_include_dirs)
         cflags = build_cflags(common_cflags, self.extra_cflags)
-        cuda_cflags = build_cuda_cflags(common_cflags, self.extra_cuda_cflags)
+        cuda_cflags, common_cuda_flags = build_cuda_cflags(
+            common_cflags, self.extra_cuda_cflags
+        )
 
-        # Replace $common_cflags and $cuda_home placeholders
+        # Replace common flag and CUDA home placeholders.
         def expand_flags(
             flags: List[str], common_cflags_expanded: List[str]
         ) -> List[str]:
             expanded = []
             for flag in flags:
-                if flag == "$common_cflags":
+                if flag in ("$common_cflags", "$common_cuda_flags"):
                     expanded.extend(common_cflags_expanded)
                 elif "$cuda_home" in flag:
                     expanded.append(flag.replace("$cuda_home", cuda_home))
@@ -636,8 +640,12 @@ class JitSpecNvcc(JitSpec):
         common_cflags_expanded = [
             flag.replace("$cuda_home", cuda_home) for flag in common_cflags
         ]
+        common_cuda_flags_expanded = [
+            flag.replace("$cuda_home", cuda_home).replace("$name", self.name)
+            for flag in common_cuda_flags
+        ]
         cflags_expanded = expand_flags(cflags, common_cflags_expanded)
-        cuda_cflags_expanded = expand_flags(cuda_cflags, common_cflags_expanded)
+        cuda_cflags_expanded = expand_flags(cuda_cflags, common_cuda_flags_expanded)
 
         # Get compilers
         cxx = os.environ.get("CXX", "c++")
@@ -692,10 +700,13 @@ def gen_jit_spec(
     use_fast_math: bool = True,
 ) -> JitSpec:
     check_cuda_arch()
+    is_windows = platform.system() == "Windows"
     # Use FLASHINFER_JIT_DEBUG if set, otherwise use FLASHINFER_JIT_VERBOSE (for backward compatibility)
     debug_env = os.environ.get("FLASHINFER_JIT_DEBUG")
     verbose_env = os.environ.get("FLASHINFER_JIT_VERBOSE", "0")
-    debug = (debug_env if debug_env is not None else verbose_env) == "1"
+    debug = (
+        debug_env if debug_env is not None else verbose_env
+    ) == "1" and not is_windows
 
     # Only add default C++ standard if not specified in extra flags
     cflags_has_std = extra_cflags is not None and any(
@@ -705,9 +716,14 @@ def gen_jit_spec(
         f.startswith("-std=") for f in extra_cuda_cflags
     )
 
-    cflags = ["-Wno-switch-bool"]
+    cflags = ["-O2"] if is_windows else ["-Wno-switch-bool"]
     if not cflags_has_std:
-        cflags.insert(0, "-std=c++17")
+        if is_windows:
+            cflags.insert(0, "/std:c++20")
+            cflags.insert(1, "/DNOMINMAX")
+            cflags.insert(2, "/Zc:preprocessor")
+        else:
+            cflags.insert(0, "-std=c++17")
 
     cuda_cflags = [
         *get_nvcc_parallelism_flags(),
@@ -720,8 +736,10 @@ def gen_jit_spec(
     ]
     if use_fast_math:
         cuda_cflags.insert(len(get_nvcc_parallelism_flags()), "-use_fast_math")
+    if is_windows:
+        cuda_cflags.insert(0, "-O2")
     if not cuda_cflags_has_std:
-        cuda_cflags.insert(0, "-std=c++17")
+        cuda_cflags.insert(0, "-std=c++20" if is_windows else "-std=c++17")
 
     if debug:
         cflags += ["-O0", "-g"]
@@ -733,7 +751,7 @@ def gen_jit_spec(
             "--ptxas-options=-v",
             "-DCUTLASS_DEBUG_TRACE_LEVEL=2",
         ]
-    else:
+    elif not is_windows:
         # non debug mode
         cuda_cflags += ["-DNDEBUG", "-O3"]
         cflags += ["-DNDEBUG", "-O3"]
@@ -742,8 +760,12 @@ def gen_jit_spec(
     if os.environ.get("FLASHINFER_JIT_LINEINFO", "0") == "1":
         cuda_cflags += ["-lineinfo"]
 
+    if is_windows:
+        cuda_cflags.append("--disable-warnings")
+
     if extra_cflags is not None:
         cflags += extra_cflags
+
     if extra_cuda_cflags is not None:
         cuda_cflags += extra_cuda_cflags
 
@@ -791,7 +813,10 @@ def build_jit_specs(
             )
         if skip_prebuilt and spec.aot_path.exists():
             continue
-        lines.append(f"subninja {spec.ninja_path}")
+        spec_path = spec.ninja_path
+        if platform.system() == "Windows":
+            spec_path = str(spec_path).replace(":\\", "$:\\")
+        lines.append(f"subninja {spec_path}")
         with FileLock(spec.lock_path, thread_local=False):
             spec.write_ninja()
     if not lines:

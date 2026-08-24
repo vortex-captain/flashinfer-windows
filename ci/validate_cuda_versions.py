@@ -261,7 +261,10 @@ def _validate_dependency_policy(
         base_requirement = _dependency_requirement(
             package, dependency, "provider_build_specifier"
         )
-        if base_requirement not in requirements:
+        accepted_requirements = {base_requirement}
+        if package == "nvidia-cutlass-dsl":
+            accepted_requirements.add(f'{base_requirement}; sys_platform != "win32"')
+        if requirements.isdisjoint(accepted_requirements):
             raise ConfigError(
                 f"requirements.txt must contain the provider-build floor "
                 f"{base_requirement!r}"

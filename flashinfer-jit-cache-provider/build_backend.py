@@ -62,6 +62,9 @@ def _ensure_build_inputs() -> None:
                 f"git stderr: {result.stderr.decode().strip()}"
             )
 
+    if platform.system() == "Windows":
+        _apply_windows_patches()
+
     import importlib.util
 
     backend_spec = importlib.util.spec_from_file_location(
@@ -74,14 +77,43 @@ def _ensure_build_inputs() -> None:
     main_build_backend._create_data_dir(use_symlinks=True)
 
 
+def _apply_windows_patches() -> None:
+    # cutlass stride.hpp + spdlog format.h patches
+    import subprocess
+    JIT_DIR = str(PROJECT_ROOT / "flashinfer-jit-cache")
+    DEPS_DIR = os.path.join(JIT_DIR, "..", "3rdparty")
+    PATCHES = [
+        ("spdlog", "windows_patch_format.patch"),
+        ("cutlass", "windows_patch_stride.patch")
+    ]
+    for dep_dir, patch_file in PATCHES:
+        patch_path = os.path.join(JIT_DIR, patch_file)
+        dep_path = os.path.join(DEPS_DIR, dep_dir)
+        if not os.path.isdir(dep_path):
+            print(f"Patch skip {dep_dir} (not found)")
+            continue
+        if not os.path.isfile(patch_path):
+            print(f"Patch skip {patch_file} (not found)")
+            continue
+        result = subprocess.run(["git", "apply", "--check", patch_path], cwd=dep_path, capture_output=True)
+        if result.returncode != 0:
+            print(f"Patch already applied or conflict in {dep_dir}, skipping")
+            continue
+        subprocess.run(["git", "apply", patch_path], cwd=dep_path, check=True)
+        print(f"Patch applied {patch_file}")
+
+
 def _write_provider_manifest(jit_cache_dir: Path) -> None:
+    suffix = ".dll" if platform.system() == "Windows" else ".so"
     modules = sorted(
         module_dir.name
         for module_dir in jit_cache_dir.iterdir()
-        if module_dir.is_dir() and (module_dir / f"{module_dir.name}.so").is_file()
+        if module_dir.is_dir() and (module_dir / f"{module_dir.name}{suffix}").is_file()
     )
     if not modules:
-        raise RuntimeError("No .so files were generated for the jit-cache provider")
+        raise RuntimeError(
+            f"No {suffix} files were generated for the jit-cache provider"
+        )
 
     manifest = {
         "schema_version": 1,
@@ -103,6 +135,8 @@ def _build_aot_modules(verbose: bool = True) -> None:
 
     jit_cache_dir = PROVIDER_SOURCE_DIR / "jit_cache"
     build_dir = PROJECT_ROOT / "build" / "aot-providers" / config.provider_tag
+    if platform.system() == "Windows":
+        build_dir = Path("C:\\_fib") / "aot-providers" / config.provider_tag
     aot.compile_and_package_modules(
         out_dir=jit_cache_dir,
         build_dir=build_dir,

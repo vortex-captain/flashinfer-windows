@@ -1,5 +1,7 @@
 import importlib.util
+import json
 import os
+import platform
 import subprocess
 import sys
 import zipfile
@@ -89,10 +91,15 @@ def provider_validation_module():
         sys.modules.pop(module_name, None)
 
 
+def _aot_library_filename(module_name: str) -> str:
+    suffix = ".dll" if platform.system() == "Windows" else ".so"
+    return f"{module_name}{suffix}"
+
+
 def _create_aot_module(root: Path, module_name: str) -> Path:
     module_dir = root / module_name
     module_dir.mkdir(parents=True)
-    module_path = module_dir / f"{module_name}.so"
+    module_path = module_dir / _aot_library_filename(module_name)
     module_path.touch()
     return module_path
 
@@ -243,6 +250,26 @@ def test_provider_backend_uses_configured_build_dependencies(monkeypatch, tmp_pa
         expected = ["setuptools>=77", "nvidia-cutlass-dsl[cu13]>=4.6.2a0"]
         assert module.get_requires_for_build_wheel(None) == expected
         assert module.get_requires_for_build_editable(None) == expected
+
+        for system, suffix, other_suffix in (
+            ("Windows", ".dll", ".so"),
+            ("Linux", ".so", ".dll"),
+        ):
+            monkeypatch.setattr(module.platform, "system", lambda: system)
+            cache = tmp_path / system
+            module_dir = cache / "example"
+            module_dir.mkdir(parents=True)
+            (module_dir / f"example{suffix}").touch()
+            wrong_dir = cache / "wrong_platform"
+            wrong_dir.mkdir()
+            (wrong_dir / f"wrong_platform{other_suffix}").touch()
+            module._write_provider_manifest(cache)
+            manifest = json.loads((provider_source / "manifest.json").read_text())
+            assert manifest["modules"] == ["example"]
+            assert manifest["cuda_architectures"] == ["sm107a"]
+            (module_dir / f"example{suffix}").unlink()
+            with pytest.raises(RuntimeError, match="No .* files were generated"):
+                module._write_provider_manifest(cache)
 
         monkeypatch.delenv(module.PROVIDER_PLATFORM_TAG_ENV, raising=False)
         assert module._provider_platform_tag("linux_x86_64") == "linux_x86_64"
@@ -650,7 +677,7 @@ def test_get_aot_path_applies_cuda_provider_compatibility(
 
     expected_root = provider_root if compatible else fallback_root
     assert jit_env.get_aot_path("attention_module") == (
-        expected_root / "attention_module" / "attention_module.so"
+        expected_root / "attention_module" / _aot_library_filename("attention_module")
     )
 
 
@@ -675,7 +702,7 @@ def test_get_aot_path_allows_provider_for_subset_of_targets(monkeypatch, tmp_pat
     )
 
     assert jit_env.get_aot_path("attention_module") == (
-        provider_root / "attention_module" / "attention_module.so"
+        provider_root / "attention_module" / _aot_library_filename("attention_module")
     )
 
 
@@ -779,7 +806,7 @@ def test_get_aot_path_does_not_guess_when_target_is_unknown(monkeypatch, tmp_pat
     monkeypatch.setattr(jit_env, "_target_cuda_architectures", lambda: frozenset())
 
     assert jit_env.get_aot_path("attention_module") == (
-        fallback_root / "attention_module" / "attention_module.so"
+        fallback_root / "attention_module" / _aot_library_filename("attention_module")
     )
 
 
