@@ -51,6 +51,27 @@ the existing Windows exclusion marker only to `nvidia-cutlass-dsl>=4.5.0`.
 Windows avoids resolving unavailable CUTLASS DSL packages; CUTLASS C++ JIT
 backends remain available.
 
+## `579f9995` conflict resolutions
+
+### TRTLLM custom-routing shared memory
+
+**Resolution:** Keep v0.6.17's caller-provided
+`smemPackedScoreIdx` parameter. Do not reintroduce the older local shared-memory
+array that would shadow the parameter.
+
+**Potential impact:** Preserves v0.6.17 cluster-kernel storage ownership and
+layout.
+
+### TRTLLM BMM Windows header overlays
+
+**Resolution:** Combine the Windows LLP64 header overlay with v0.6.17's
+per-module Blackwell/Rubin export isolation. Each Windows overlay is now keyed
+by `module_name`; non-Windows retains the per-module symlink root.
+
+**Potential impact:** Header content and kernel selection are unchanged. This
+prevents Blackwell and Rubin generation from sharing or overwriting an export
+header tree during AOT builds.
+
 ## Pending
 
 - Remaining replay commits

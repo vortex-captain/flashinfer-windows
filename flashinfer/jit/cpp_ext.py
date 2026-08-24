@@ -92,6 +92,57 @@ def is_cuda_version_at_least(version_str: str) -> bool:
     return get_cuda_version() >= Version(version_str)
 
 
+@functools.cache
+def get_cuda_include_overlay(cuda_home: str) -> Optional[Path]:
+    """Create a Windows CUDA 13 CUtensorMap alignment overlay when needed."""
+    if not is_windows or get_cuda_version() < Version("13.0"):
+        return None
+
+    source_header = Path(cuda_home) / "include" / "cuda.h"
+    content = source_header.read_bytes()
+    struct_start = content.find(b"typedef struct CUtensorMap_st {")
+    struct_end = content.find(b"} CUtensorMap;", struct_start)
+    if struct_start < 0 or struct_end < 0:
+        raise RuntimeError(f"CUtensorMap declaration not found in {source_header}")
+    struct_end += len(b"} CUtensorMap;")
+    declaration = content[struct_start:struct_end]
+
+    if b"alignas(64)" in declaration and b"_Alignas(64)" in declaration:
+        return None
+    if (
+        declaration.count(b"alignas(128)") != 1
+        or declaration.count(b"_Alignas(128)") != 1
+    ):
+        raise RuntimeError(
+            f"Unexpected CUtensorMap alignment declaration in {source_header}"
+        )
+
+    patched_declaration = declaration.replace(
+        b"alignas(128)", b"alignas(64)"
+    ).replace(b"_Alignas(128)", b"_Alignas(64)")
+    patched_content = (
+        content[:struct_start] + patched_declaration + content[struct_end:]
+    )
+
+    overlay_dir = (
+        jit_env.FLASHINFER_CACHE_DIR
+        / "cuda_include_overlay"
+        / str(get_cuda_version())
+    )
+    overlay_header = overlay_dir / "cuda.h"
+    if not overlay_header.exists() or overlay_header.read_bytes() != patched_content:
+        overlay_dir.mkdir(parents=True, exist_ok=True)
+        temporary_header = overlay_header.with_name(
+            f"{overlay_header.name}.{os.getpid()}.tmp"
+        )
+        try:
+            temporary_header.write_bytes(patched_content)
+            os.replace(temporary_header, overlay_header)
+        finally:
+            temporary_header.unlink(missing_ok=True)
+    return overlay_dir
+
+
 def get_nvcc_parallelism_flags() -> List[str]:
     """Build nvcc flags controlled by FlashInfer parallelism environment variables."""
     env_var_name = "FLASHINFER_NVCC_THREADS"
@@ -154,6 +205,9 @@ def build_common_cflags(
     if not sysconfig.get_config_var("Py_GIL_DISABLED"):
         common_cflags.append("-DPy_LIMITED_API=0x03090000")
     common_cflags += _get_glibcxx_abi_build_flags()
+    cuda_include_overlay = get_cuda_include_overlay(cuda_home)
+    if cuda_include_overlay is not None:
+        common_cflags.append(f'-I"{cuda_include_overlay}"')
     if extra_include_dirs is not None:
         for extra_dir in extra_include_dirs:
             common_cflags.append(f"-I{extra_dir.resolve()}")
@@ -284,9 +338,14 @@ def generate_ninja_build_for_op(
         if python_path.endswith("\\Scripts"):
             python_path = os.path.dirname(python_path)
         python_lib_path = os.path.join(sys.base_exec_prefix, "libs")
+        cuda_lib_arch = (
+            "arm64"
+            if platform.machine().lower() in ("arm64", "aarch64")
+            else "x64"
+        )
         ldflags = [
             f'"/LIBPATH:{python_lib_path}"',
-            '"/LIBPATH:$cuda_home\\lib\\x64"',
+            f'"/LIBPATH:$cuda_home\\lib\\{cuda_lib_arch}"',
             f'"/LIBPATH:{python_path}\\Lib\\site-packages\\tvm_ffi\\lib"',
             f'"/LIBPATH:{python_path}\\Lib\\site-packages\\torch\\lib"',
             "c10.lib",
@@ -342,7 +401,9 @@ def generate_ninja_build_for_op(
         ]
         rule_link = [
             "rule link",
-            "  command = link.exe /DLL $in /nologo $ldflags /out:$out",
+            '  command = link.exe @"$out.rsp"',
+            "  rspfile = $out.rsp",
+            "  rspfile_content = /DLL $in /nologo $ldflags /out:$out",
         ]
     else:
         rule_compile = [

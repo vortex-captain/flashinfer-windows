@@ -100,9 +100,35 @@ commits. Preserve the `uint128` fix when testing alternate pins, and validate
 all affected JIT modules rather than treating the successful NVFP4 probe as
 general compatibility proof.
 
+### Packaged CCCL `__out` identifiers
+
+**Decision:** Apply the repack's exact-token `__out` to `__cccl_out` rename
+after `build_backend.py` copies the CCCL submodule into `flashinfer/data` for a
+wheel. Keep the CCCL submodule itself unmodified.
+
+**Potential impact:** The change is limited to 6,736 local parameter identifiers
+in one generated PTX header and avoids collision with the Windows SAL `__out`
+macro. The build fails closed if the expected token count or header structure
+changes. Source and editable installs do not receive this wheel-only transform.
+
+### Repack syntax and constant transformations
+
+**Decision:** Apply the repack's exact 25
+`__attribute__((aligned(128)))` to `__align__(128)` substitutions and replace
+three `-INFINITY` constant expressions with
+`-std::numeric_limits<float>::infinity()`.
+
+**Potential impact:** Both substitutions preserve requested alignment and IEEE
+negative-infinity values while using syntax accepted by MSVC/NVCC. The port
+requires the exact expected declaration counts so source drift fails visibly.
+
 ## Pending decisions
 
-- Review of other cleanly applied `3ea119e` changes, especially older GDN
-  additions
-- Any conflicts from `33d131a`, `502d849`, and `7133582`
-- Repack patch and scripted transformation conflicts
+- CUTLASS pin changes discovered during future Windows ARM64 compatibility
+  testing
+- Reconsideration of the indirect launch only if direct launch exposes a
+  distinct parameter ABI failure
+
+The later `33d131a`, `502d849`, and `7133582` commits applied without
+conflicts. The selected repack patch hunks also applied without adaptation;
+the indirect-launch hunk was intentionally excluded as documented above.
