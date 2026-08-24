@@ -126,6 +126,20 @@ three `-INFINITY` constant expressions with
 negative-infinity values while using syntax accepted by MSVC/NVCC. The port
 requires the exact expected declaration counts so source drift fails visibly.
 
+### NVFP4 quantization dispatch
+
+**Decision:** Replace the nested generic-lambda dispatch for NVFP4 4-over-6
+quantization with named function templates and explicit runtime branches.
+
+**Reason:** NVCC 13.4 on Windows ARM64 raised an internal code-generation error
+at the nested dispatch before the quantization module could link.
+
+**Potential impact:** The rewrite preserves all 18 specializations: two
+`disableFP4QuantFastMath` values for the normal path, plus
+`2 x 2 x 2 x 2` combinations of that flag, E4M3 maximum (256/448), error mode
+(MAE/MSE), and error fast-math for 4-over-6. Any future new enum value or
+specialization axis must be added to the named dispatch helpers.
+
 ## Pending decisions
 
 - CUTLASS pin changes discovered during future Windows ARM64 compatibility
