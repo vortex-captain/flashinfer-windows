@@ -29,7 +29,7 @@ from build_utils import get_cuda_tile_compile_dependency_requirements, get_git_v
 _root = Path(__file__).parent.resolve()
 _data_dir = _root / "flashinfer" / "data"
 _CCCL_HEADER = Path(
-    "cccl/libcudacxx/include/cuda/__ptx/instructions/generated/tcgen05_ld.h"
+    "libcudacxx/include/cuda/__ptx/instructions/generated/tcgen05_ld.h"
 )
 _EXPECTED_CCCL_OUT_TOKENS = 6736
 
@@ -1119,8 +1119,9 @@ def _create_data_dir(use_symlinks=True):
     ln("include", "include")
 
 
-def _patch_packaged_cccl_for_windows() -> None:
-    header = _data_dir / _CCCL_HEADER
+@contextmanager
+def _patched_cccl_for_windows_wheel():
+    header = _root / "3rdparty" / "cccl" / _CCCL_HEADER
     content = header.read_text(encoding="utf-8")
     if re.search(r"^\s*#\s*define\s+__out\b", content, re.MULTILINE):
         raise RuntimeError(f"Unexpected __out macro definition in {header}")
@@ -1134,11 +1135,15 @@ def _patch_packaged_cccl_for_windows() -> None:
             f"found {count}"
         )
 
-    header.write_text(
-        re.sub(r"\b__out\b", "__cccl_out", content),
-        encoding="utf-8",
-        newline="\n",
-    )
+    try:
+        header.write_text(
+            re.sub(r"\b__out\b", "__cccl_out", content),
+            encoding="utf-8",
+            newline="\n",
+        )
+        yield
+    finally:
+        header.write_text(content, encoding="utf-8", newline="\n")
 
 
 def _prepare_for_wheel():
@@ -1148,7 +1153,6 @@ def _prepare_for_wheel():
     if _data_dir.exists():
         shutil.rmtree(_data_dir)
     _create_data_dir(use_symlinks=False)
-    _patch_packaged_cccl_for_windows()
 
     # Copy license files from licenses/ to root to avoid nested path in wheel
     licenses_dir = _root / "licenses"
@@ -1215,4 +1219,5 @@ def build_sdist(sdist_directory, config_settings=None):
 
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     _prepare_for_wheel()
-    return orig.build_wheel(wheel_directory, config_settings, metadata_directory)
+    with _patched_cccl_for_windows_wheel():
+        return orig.build_wheel(wheel_directory, config_settings, metadata_directory)
