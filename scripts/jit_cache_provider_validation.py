@@ -171,14 +171,18 @@ def validate_provider(
     )
 
     module_paths: dict[str, str] = {}
+    platform_tags = wheel.path.stem.rsplit("-", 1)[-1].split(".")
+    library_suffix = (
+        ".dll" if all(tag.startswith("win") for tag in platform_tags) else ".so"
+    )
     so_prefix = f"{package_prefix}/jit_cache/"
     for path in wheel.contents:
-        if not path.startswith(so_prefix) or not path.endswith(".so"):
+        if not path.startswith(so_prefix) or not path.endswith(library_suffix):
             continue
         relative = path.removeprefix(so_prefix)
         parts = relative.split("/")
         require(
-            len(parts) == 2 and parts[1] == f"{parts[0]}.so",
+            len(parts) == 2 and parts[1] == f"{parts[0]}{library_suffix}",
             f"Unexpected provider shared-library path: {path}",
         )
         module_paths[parts[0]] = path
@@ -223,7 +227,7 @@ def validate_shim(
         f"Shim version {wheel.version} does not match {expected_version}",
     )
     require(
-        not any(path.endswith(".so") for path in wheel.contents),
+        not any(path.endswith((".so", ".dll")) for path in wheel.contents),
         "Shim wheel must not contain shared libraries",
     )
     if expected_platform_tag:
@@ -336,7 +340,7 @@ def inspect_cuda_architectures(
             for index, (module, archive_path) in enumerate(
                 sorted(module_paths.items())
             ):
-                extracted_path = temp_root / f"{index}.so"
+                extracted_path = temp_root / f"{index}{Path(archive_path).suffix}"
                 extracted_path.write_bytes(archive.read(archive_path))
                 process = subprocess.run(
                     [str(cuobjdump), "--list-elf", str(extracted_path)],

@@ -9,7 +9,9 @@ Run with: pytest tests/comm/test_cuda_ipc_library_lookup.py -vv
 from unittest import mock
 
 import pytest
+import torch.version
 
+from flashinfer.comm import cuda_ipc
 from flashinfer.comm.cuda_ipc import _is_library_filename, find_loaded_library
 
 CUDART = "/usr/local/cuda/lib64/libcudart.so.12"
@@ -44,6 +46,11 @@ REJECTED_FILENAMES = [
     "libcudart.so.backup",
     "libcudart.so.12a",
 ]
+
+
+@pytest.fixture(autouse=True)
+def linux_library_lookup(monkeypatch):
+    monkeypatch.setattr(cuda_ipc.platform, "system", lambda: "Linux")
 
 
 def _maps_line(path: str, address: str = "7f0000000000-7f0000001000") -> str:
@@ -133,3 +140,23 @@ def test_ignores_stubs_whatever_separator_they_use(decoy):
 def test_returns_none_when_the_library_is_not_mapped():
     with _mock_maps("/usr/lib/libc.so.6"):
         assert find_loaded_library("libcudart") is None
+
+
+@pytest.mark.parametrize(
+    "variable", ["CUDA_HOME", "CUDA_ROOT", "CUDA_PATH", "CUDA_LIB_PATH"]
+)
+def test_windows_cuda_runtime_environment_precedence(monkeypatch, tmp_path, variable):
+    monkeypatch.setattr(cuda_ipc.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(torch.version, "cuda", "13.4")
+    variables = ("CUDA_HOME", "CUDA_ROOT", "CUDA_PATH", "CUDA_LIB_PATH")
+    toolkit = tmp_path / "cuda"
+    binary_dir = toolkit / "bin" / "x64"
+    binary_dir.mkdir(parents=True)
+    for index, name in enumerate(variables):
+        monkeypatch.delenv(name, raising=False)
+        if index >= variables.index(variable):
+            value = toolkit if name == variable else tmp_path / "lower-priority"
+            if name == "CUDA_LIB_PATH":
+                value = value / "lib" / "x64"
+            monkeypatch.setenv(name, str(value))
+    assert find_loaded_library("libcudart") == str(binary_dir / "cudart64_13.dll")
