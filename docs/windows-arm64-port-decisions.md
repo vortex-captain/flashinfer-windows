@@ -103,13 +103,17 @@ general compatibility proof.
 ### Packaged CCCL `__out` identifiers
 
 **Decision:** Apply the repack's exact-token `__out` to `__cccl_out` rename
-after `build_backend.py` copies the CCCL submodule into `flashinfer/data` for a
-wheel. Keep the CCCL submodule itself unmodified.
+temporarily in the CCCL source header while setuptools assembles a wheel, then
+restore the original content in a `finally` block. Keep the CCCL submodule
+clean.
 
 **Potential impact:** The change is limited to 6,736 local parameter identifiers
 in one generated PTX header and avoids collision with the Windows SAL `__out`
 macro. The build fails closed if the expected token count or header structure
 changes. Source and editable installs do not receive this wheel-only transform.
+The first attempted hook patched the copied `flashinfer/data` tree, but wheel
+inspection showed that `pyproject.toml` packages CCCL directly from
+`3rdparty/cccl`; this corrected hook targets the actual package source.
 
 ### Repack syntax and constant transformations
 
