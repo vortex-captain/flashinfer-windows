@@ -75,4 +75,23 @@ geometry, argument order, layouts, optimization flags, and math are unchanged.
 - Source-tree runtime validation completed quantization and the CUTLASS GEMM for
   `M=48, N=34816, K=5120`.
 - GEMM time was 7.515 ms and the process exited successfully.
-- Final rebuilt-wheel installation test remains pending.
+- The final rebuilt wheel installed into `.venv` and passed the same clean-cache
+  `N=34816` test. The smoke-test GEMM time was 7.321 ms.
+- NumPy-reference validation passed with finite output, cosine similarity
+  `0.9909701077`, relative L2 error `0.1343695999`, RMSE `9.612236521`, mean
+  absolute error `7.667474716`, and max absolute error `51.10081482`.
+
+## Final wheel
+
+```text
+dist/flashinfer_python-0.6.14-py3-none-any.whl
+SHA256 42DE5FF238767D0731968C3F85BC3B4FC30BCF6C515D6FBFECC18E232CE9D575
+```
+
+Payload checks:
+
+- no native binaries (source-only wheel);
+- portable CUTLASS `udiv128` fallback present;
+- no indirect SM120 launch wrapper;
+- zero CCCL `__out` tokens and 6,736 `__cccl_out` replacements;
+- no generic-lambda dispatch remains in `quantization.cu`.
