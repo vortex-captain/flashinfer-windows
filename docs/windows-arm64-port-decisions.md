@@ -128,17 +128,18 @@ requires the exact expected declaration counts so source drift fails visibly.
 
 ### NVFP4 quantization dispatch
 
-**Decision:** Replace the nested generic-lambda dispatch for NVFP4 4-over-6
-quantization with named function templates and explicit runtime branches.
+**Decision:** Replace all generic-lambda dispatch in `quantization.cu` with
+named function templates, typed adapters, launcher structs, and explicit
+runtime branches.
 
 **Reason:** NVCC 13.4 on Windows ARM64 raised an internal code-generation error
 at the nested dispatch before the quantization module could link.
 
-**Potential impact:** The rewrite preserves all 18 specializations: two
-`disableFP4QuantFastMath` values for the normal path, plus
-`2 x 2 x 2 x 2` combinations of that flag, E4M3 maximum (256/448), error mode
-(MAE/MSE), and error fast-math for 4-over-6. Any future new enum value or
-specialization axis must be added to the named dispatch helpers.
+**Potential impact:** The rewrite preserves all 18 NVFP4 configuration
+specializations plus the existing SF layout, row-wise scale, inverse scale,
+UE8M0, quantization-type, input-type, TMA/non-TMA, and expert-kernel axes. Any
+future new enum value or specialization axis must be added to the named
+dispatch helpers.
 
 ## Pending decisions
 
