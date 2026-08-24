@@ -72,9 +72,29 @@ by `module_name`; non-Windows retains the per-module symlink root.
 prevents Blackwell and Rubin generation from sharing or overwriting an export
 header tree during AOT builds.
 
-## Pending
+## Cleanly replayed commits
 
-- Remaining replay commits
+The following v0.6.14 port commits applied to v0.6.17 without conflict:
+
+- `6ad8f76e` — C++ standard flag ordering
+- `37dcaccc` — quoted Windows Ninja/CUDA paths
+- `689f59b8` — short Windows JIT cache path
+- `9795486e` — temporary CCCL wheel transform
+- `e57cad47` — initial NVFP4 dispatch ICE workaround
+- `23556d73` — complete quantization dispatch refactor
+- `ab8049b1` — historical v0.6.14 validation record
+
+## v0.6.17 source checks
+
+- CUTLASS remains pinned to `b46b16d` with portable `uint128` division.
+- The unproven indirect SM120/SM121 launch wrapper remains excluded.
+- No generic-lambda dispatch remains in `quantization.cu`.
+- Changed Python build/JIT modules pass `py_compile`.
+- The v0.6.17 descriptive XQA URI and shared real/fake operator name remain
+  intact.
+
+## Pending validation
+
 - Wheel build and source-payload checks
 - SM121 `N=34816` NumPy correctness validation
 - vLLM NVFP4 end-to-end validation with 25GB KV cache
