@@ -97,4 +97,3 @@ The following v0.6.14 port commits applied to v0.6.17 without conflict:
 
 - Wheel build and source-payload checks
 - SM121 `N=34816` NumPy correctness validation
-- vLLM NVFP4 end-to-end validation with 25GB KV cache
