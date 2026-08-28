@@ -4,7 +4,7 @@ This document records issues discovered only after building or testing the
 first FlashInfer v0.6.14 Windows ARM64 wheel. It complements
 `windows-arm64-port-decisions.md`.
 
-## Packaged CCCL SAL identifier transform
+## CCCL SAL identifier overlay
 
 **Failure:** The first completed wheel still contained 6,736 exact `__out`
 identifiers and zero `__cccl_out` replacements.
@@ -17,12 +17,21 @@ This was not an outstanding issue in that workflow.
 the copied `flashinfer/data/cccl` tree, but `pyproject.toml` packages
 `flashinfer.data.cccl` directly from `3rdparty/cccl`.
 
-**Fix:** Temporarily replace exact `__out` tokens in the source header while
-setuptools assembles the wheel, then restore the original header in a `finally`
-block. The transform fails closed unless exactly 6,736 tokens are present.
+**Superseded fix:** The initial v0.6.14 correction temporarily replaced exact
+`__out` tokens in the source header while setuptools assembled the wheel, then
+restored the header in a `finally` block. This covered wheel assembly but not
+runtime JIT from source or editable installs.
 
-**Validation:** The corrected wheel contains zero `__out` tokens and 6,736
-`__cccl_out` tokens. The CCCL submodule remains clean.
+**Current fix:** Generate the transformed header under
+`FLASHINFER_GEN_SRC_DIR/_cccl_include_overlay` and put the overlay before the
+vendored CCCL include roots for every Windows `JitSpecNvcc`. The source and
+packaged CCCL headers remain unchanged. Generation fails closed unless exactly
+6,736 tokens are present.
+
+**Validation:** A runtime-JIT probe included Windows `sal.h` before the affected
+CCCL header and compiled for SM103a. The overlay contained zero `__out` tokens
+and 6,736 `__cccl_out` tokens, linked `module.dll`, and left the CCCL submodule
+byte-clean. JIT-cache AOT uses the same Ninja flag construction.
 
 ## NVFP4 quantization dispatch NVCC ICE
 
@@ -93,5 +102,6 @@ Payload checks:
 - no native binaries (source-only wheel);
 - portable CUTLASS `udiv128` fallback present;
 - no indirect SM120 launch wrapper;
-- zero CCCL `__out` tokens and 6,736 `__cccl_out` replacements;
+- original CCCL payload retained; the runtime/AOT overlay performs the 6,736
+  `__out` to `__cccl_out` replacements in writable generated storage;
 - no generic-lambda dispatch remains in `quantization.cu`.

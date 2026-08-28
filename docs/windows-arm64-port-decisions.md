@@ -100,20 +100,20 @@ commits. Preserve the `uint128` fix when testing alternate pins, and validate
 all affected JIT modules rather than treating the successful NVFP4 probe as
 general compatibility proof.
 
-### Packaged CCCL `__out` identifiers
+### CCCL `__out` identifiers
 
-**Decision:** Apply the repack's exact-token `__out` to `__cccl_out` rename
-temporarily in the CCCL source header while setuptools assembles a wheel, then
-restore the original content in a `finally` block. Keep the CCCL submodule
-clean.
+**Decision:** Generate a patched copy of the affected CCCL PTX header under the
+writable `FLASHINFER_GEN_SRC_DIR` and prepend that directory to Windows compiler
+include paths. Apply the exact-token `__out` to `__cccl_out` rename only in this
+cached overlay. Do not modify the source, editable-install target, or packaged
+CCCL tree.
 
 **Potential impact:** The change is limited to 6,736 local parameter identifiers
 in one generated PTX header and avoids collision with the Windows SAL `__out`
-macro. The build fails closed if the expected token count or header structure
-changes. Source and editable installs do not receive this wheel-only transform.
-The first attempted hook patched the copied `flashinfer/data` tree, but wheel
-inspection showed that `pyproject.toml` packages CCCL directly from
-`3rdparty/cccl`; this corrected hook targets the actual package source.
+macro. Generation fails closed if the expected token count or header structure
+changes. Runtime JIT and JIT-cache AOT compilation share the same overlay path.
+The previous wheel-only source mutation was removed because it did not cover
+runtime JIT and required restoration after every build.
 
 ### Repack syntax and constant transformations
 
