@@ -343,7 +343,11 @@ class JitSpecNvcc(JitSpec):
 
     @property
     def jit_library_path(self) -> Path:
-        return jit_env.FLASHINFER_JIT_DIR / self.name / f"{self.name}.dll" if platform.system() == "Windows" else f"{self.name}.so"
+        return (
+            jit_env.FLASHINFER_JIT_DIR / self.name / "module.dll"
+            if platform.system() == "Windows"
+            else jit_env.FLASHINFER_JIT_DIR / self.name / f"{self.name}.so"
+        )
 
     def get_library_path(self) -> Path:
         if self.is_aot:
@@ -362,7 +366,11 @@ class JitSpecNvcc(JitSpec):
 
     @property
     def aot_path(self) -> Path:
-        return jit_env.FLASHINFER_AOT_DIR / self.name / f"{self.name}.dll" if platform.system() == "Windows" else f"{self.name}.so"
+        return (
+            jit_env.FLASHINFER_AOT_DIR / self.name / "module.dll"
+            if platform.system() == "Windows"
+            else jit_env.FLASHINFER_AOT_DIR / self.name / f"{self.name}.so"
+        )
 
     @property
     def is_aot(self) -> bool:

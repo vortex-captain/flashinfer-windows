@@ -79,7 +79,8 @@ The following v0.6.14 port commits applied to v0.6.17 without conflict:
 - `6ad8f76e` — C++ standard flag ordering
 - `37dcaccc` — quoted Windows Ninja/CUDA paths
 - `689f59b8` — short Windows JIT cache path
-- `9795486e` — temporary CCCL wheel transform
+- `9795486e` — temporary CCCL wheel transform, later superseded by the shared
+  runtime-JIT/JIT-cache generated include overlay
 - `e57cad47` — initial NVFP4 dispatch ICE workaround
 - `23556d73` — complete quantization dispatch refactor
 - `ab8049b1` — historical v0.6.14 validation record

@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import sysconfig
+import threading
 from packaging.version import Version
 from pathlib import Path
 from typing import List, Optional
@@ -20,6 +21,11 @@ from ..compilation_context import CompilationContext
 
 is_windows = platform.system() == "Windows"
 logger = logging.getLogger(__name__)
+
+_CCCL_TCGEN05_HEADER = Path(
+    "cuda/__ptx/instructions/generated/tcgen05_ld.h"
+)
+_EXPECTED_CCCL_OUT_TOKENS = 6736
 
 def parse_env_flags(env_var_name) -> List[str]:
     env_flags = os.environ.get(env_var_name)
@@ -143,6 +149,59 @@ def get_cuda_include_overlay(cuda_home: str) -> Optional[Path]:
     return overlay_dir
 
 
+@functools.cache
+def _get_cccl_include_overlay(source_header: Path, overlay_dir: Path) -> Path:
+    original = source_header.read_bytes()
+    content = original.decode("utf-8")
+    if re.search(r"^\s*#\s*define\s+__out\b", content, re.MULTILINE):
+        raise RuntimeError(f"Unexpected __out macro definition in {source_header}")
+    if re.search(r"\b__cccl_out\b", content):
+        raise RuntimeError(f"Replacement identifier already exists in {source_header}")
+
+    count = len(re.findall(r"\b__out\b", content))
+    if count != _EXPECTED_CCCL_OUT_TOKENS:
+        raise RuntimeError(
+            f"Expected {_EXPECTED_CCCL_OUT_TOKENS} __out tokens in {source_header}, "
+            f"found {count}"
+        )
+    patched = re.sub(r"\b__out\b", "__cccl_out", content).encode("utf-8")
+    overlay_header = overlay_dir / _CCCL_TCGEN05_HEADER
+    if not overlay_header.exists() or overlay_header.read_bytes() != patched:
+        overlay_header.parent.mkdir(parents=True, exist_ok=True)
+        temporary_header = overlay_header.with_name(
+            f"{overlay_header.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        try:
+            temporary_header.write_bytes(patched)
+            os.replace(temporary_header, overlay_header)
+        finally:
+            temporary_header.unlink(missing_ok=True)
+    return overlay_dir
+
+
+def get_cccl_include_overlay() -> Optional[Path]:
+    """Create a writable Windows overlay for CCCL's SAL-conflicting header."""
+    if not is_windows:
+        return None
+
+    source_header = next(
+        (
+            include_dir / _CCCL_TCGEN05_HEADER
+            for include_dir in jit_env.CCCL_INCLUDE_DIRS
+            if (include_dir / _CCCL_TCGEN05_HEADER).is_file()
+        ),
+        None,
+    )
+    if source_header is None:
+        raise RuntimeError(
+            f"CCCL header {_CCCL_TCGEN05_HEADER} was not found under "
+            f"{jit_env.CCCL_INCLUDE_DIRS}"
+        )
+
+    overlay_dir = jit_env.FLASHINFER_GEN_SRC_DIR / "_cccl_include_overlay"
+    return _get_cccl_include_overlay(source_header.resolve(), overlay_dir.resolve())
+
+
 def get_nvcc_parallelism_flags() -> List[str]:
     """Build nvcc flags controlled by FlashInfer parallelism environment variables."""
     env_var_name = "FLASHINFER_NVCC_THREADS"
@@ -208,6 +267,9 @@ def build_common_cflags(
     cuda_include_overlay = get_cuda_include_overlay(cuda_home)
     if cuda_include_overlay is not None:
         common_cflags.append(f'-I"{cuda_include_overlay}"')
+    cccl_include_overlay = get_cccl_include_overlay()
+    if cccl_include_overlay is not None:
+        common_cflags.append(f'-I"{cccl_include_overlay}"')
     if extra_include_dirs is not None:
         for extra_dir in extra_include_dirs:
             common_cflags.append(f"-I{extra_dir.resolve()}")
@@ -386,8 +448,10 @@ def generate_ninja_build_for_op(
     # Compiler launchers (e.g., sccache, ccache) — empty string when unset
     cxx_launcher = os.environ.get("FLASHINFER_CXX_LAUNCHER", "")
     nvcc_launcher = os.environ.get("FLASHINFER_NVCC_LAUNCHER", "")
+    output_dir = jit_env.FLASHINFER_JIT_DIR / name
 
     if is_windows:
+        link_rsp = str((output_dir / "link.rsp").resolve()).replace(":\\", "$:\\")
         rule_compile = [
             "rule compile",
             "  command = cl.exe $cflags -c $in /Fo$out $post_cflags",
@@ -401,8 +465,8 @@ def generate_ninja_build_for_op(
         ]
         rule_link = [
             "rule link",
-            '  command = link.exe @"$out.rsp"',
-            "  rspfile = $out.rsp",
+            f'  command = link.exe @"{link_rsp}"',
+            f"  rspfile = {link_rsp}",
             "  rspfile_content = /DLL $in /nologo $ldflags /out:$out",
         ]
     else:
@@ -467,8 +531,6 @@ def generate_ninja_build_for_op(
     # Use absolute paths for outputs so ninja files work with any workdir
     # This enables isolated workdirs for runtime JIT (avoiding .ninja_log races)
     # while still supporting subninja for parallel AOT builds
-    output_dir = jit_env.FLASHINFER_JIT_DIR / name
-
     objects = []
     for source in sources:
         is_cuda = source.suffix == ".cu"
@@ -485,7 +547,7 @@ def generate_ninja_build_for_op(
     lines.append("")
     link_rule = "nvcc_link" if needs_device_linking else "link"
     if is_windows:
-        output_so = str((output_dir / f"{name}.dll").resolve()).replace(":\\", "$:\\")
+        output_so = str((output_dir / "module.dll").resolve()).replace(":\\", "$:\\")
         lines.append(f"build {output_so}: {link_rule} " + " ".join(objects))
         lines.append(f"default {output_so}")
     else:

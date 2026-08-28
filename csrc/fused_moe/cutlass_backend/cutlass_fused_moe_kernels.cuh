@@ -75,55 +75,58 @@ namespace tensorrt_llm::kernels::cutlass_kernels {
 
 constexpr int CVT_ELTS_PER_THREAD = 8;
 
+template <int E4M3_MAX, NVFP44Over6ErrMode ERR_MODE, bool ERR_USE_FAST_MATH, typename Fn>
+decltype(auto) dispatchNVFP44Over6DisableFastMath(bool disableFP4QuantFastMath, Fn& fn) {
+  if (disableFP4QuantFastMath) {
+    return fn(std::true_type{},
+              NVFP44Over6Config<E4M3_MAX, ERR_MODE, ERR_USE_FAST_MATH>{});
+  }
+  return fn(std::false_type{},
+            NVFP44Over6Config<E4M3_MAX, ERR_MODE, ERR_USE_FAST_MATH>{});
+}
+
+template <int E4M3_MAX, NVFP44Over6ErrMode ERR_MODE, typename Fn>
+decltype(auto) dispatchNVFP44Over6ErrFastMath(bool errUseFastMath,
+                                              bool disableFP4QuantFastMath, Fn& fn) {
+  if (errUseFastMath) {
+    return dispatchNVFP44Over6DisableFastMath<E4M3_MAX, ERR_MODE, true>(
+        disableFP4QuantFastMath, fn);
+  }
+  return dispatchNVFP44Over6DisableFastMath<E4M3_MAX, ERR_MODE, false>(
+      disableFP4QuantFastMath, fn);
+}
+
+template <int E4M3_MAX, typename Fn>
+decltype(auto) dispatchNVFP44Over6ErrMode(NVFP44Over6ErrMode errMode, bool errUseFastMath,
+                                          bool disableFP4QuantFastMath, Fn& fn) {
+  switch (errMode) {
+    case NVFP44Over6ErrMode::MAE:
+      return dispatchNVFP44Over6ErrFastMath<E4M3_MAX, NVFP44Over6ErrMode::MAE>(
+          errUseFastMath, disableFP4QuantFastMath, fn);
+    case NVFP44Over6ErrMode::MSE:
+      return dispatchNVFP44Over6ErrFastMath<E4M3_MAX, NVFP44Over6ErrMode::MSE>(
+          errUseFastMath, disableFP4QuantFastMath, fn);
+    default:
+      TLLM_CHECK_WITH_INFO(false, "Unsupported NVFP4 4over6 error mode.");
+      return dispatchNVFP44Over6ErrFastMath<E4M3_MAX, NVFP44Over6ErrMode::MAE>(
+          errUseFastMath, disableFP4QuantFastMath, fn);
+  }
+}
+
 template <typename Fn>
-auto dispatchNVFP44Over6Config(Fn&& fn) {
+decltype(auto) dispatchNVFP44Over6Config(Fn&& fn) {
   bool const use4Over6 = tensorrt_llm::common::getEnvNVFP4Use4Over6();
   bool const disableFP4QuantFastMath = tensorrt_llm::common::getEnvDisableFP4QuantFastMath();
-
-  auto dispatchDisableFastMath = [&](auto e4m3MaxTag, auto errModeTag, auto errUseFastMathTag) {
-    if (disableFP4QuantFastMath) {
-      return fn(std::true_type{},
-                NVFP44Over6Config<decltype(e4m3MaxTag)::value, decltype(errModeTag)::value,
-                                  decltype(errUseFastMathTag)::value>{});
-    }
-    return fn(std::false_type{},
-              NVFP44Over6Config<decltype(e4m3MaxTag)::value, decltype(errModeTag)::value,
-                                decltype(errUseFastMathTag)::value>{});
-  };
 
   if (use4Over6) {
     NVFP44Over6ErrMode const errMode = tensorrt_llm::common::getEnvNVFP44Over6ErrMode();
     bool const errUseFastMath = tensorrt_llm::common::getEnvNVFP44Over6ErrUseFastMath();
-    int e4m3Max = 448;
     if (tensorrt_llm::common::getEnvNVFP44Over6E4M3Use256()) {
-      e4m3Max = 256;
+      return dispatchNVFP44Over6ErrMode<256>(errMode, errUseFastMath,
+                                             disableFP4QuantFastMath, fn);
     }
-
-    auto dispatchErrUseFastMath = [&](auto e4m3MaxTag, auto errModeTag) {
-      if (errUseFastMath) {
-        return dispatchDisableFastMath(e4m3MaxTag, errModeTag, std::true_type{});
-      }
-      return dispatchDisableFastMath(e4m3MaxTag, errModeTag, std::false_type{});
-    };
-    auto dispatchErrMode = [&](auto e4m3MaxTag) {
-      switch (errMode) {
-        case NVFP44Over6ErrMode::MAE:
-          return dispatchErrUseFastMath(
-              e4m3MaxTag, std::integral_constant<NVFP44Over6ErrMode, NVFP44Over6ErrMode::MAE>{});
-        case NVFP44Over6ErrMode::MSE:
-          return dispatchErrUseFastMath(
-              e4m3MaxTag, std::integral_constant<NVFP44Over6ErrMode, NVFP44Over6ErrMode::MSE>{});
-        default:
-          TLLM_CHECK_WITH_INFO(false, "Unsupported NVFP4 4over6 error mode.");
-          return dispatchErrUseFastMath(
-              e4m3MaxTag, std::integral_constant<NVFP44Over6ErrMode, NVFP44Over6ErrMode::MAE>{});
-      }
-    };
-    if (e4m3Max == 256) {
-      return dispatchErrMode(std::integral_constant<int, 256>{});
-    }
-    TLLM_CHECK_WITH_INFO(e4m3Max == 448, "Unsupported NVFP4 4over6 E4M3 max.");
-    return dispatchErrMode(std::integral_constant<int, 448>{});
+    return dispatchNVFP44Over6ErrMode<448>(errMode, errUseFastMath,
+                                           disableFP4QuantFastMath, fn);
   }
 
   if (disableFP4QuantFastMath) {
@@ -1615,6 +1618,52 @@ struct NVFP4ExpandInputRowsKernelSelector {
 };
 
 template <class InputActivationsType, class ExpandedActivationsType>
+auto selectExpandInputRowsKernel(QuantParams const& quant_params, void const* prequant_scales) {
+#ifdef ENABLE_FP8
+  if constexpr (std::is_same_v<ExpandedActivationsType, __nv_fp8_e4m3> &&
+                !std::is_same_v<InputActivationsType, __nv_fp8_e4m3>) {
+    TLLM_CHECK_WITH_INFO(quant_params.mxfp8_mxfp4.fc1.weight_block_scale ||
+                             quant_params.mxfp8_mxfp8.fc1.weight_block_scale || prequant_scales,
+                         "MXFP8 block scaling or prequant_scales parameters not provided");
+    return prequant_scales
+               ? &expandInputRowsKernel<
+                     InputActivationsType, ExpandedActivationsType,
+                     TmaWarpSpecializedGroupedGemmInput::FpXBlockScalingType::NONE, true>
+               : &expandInputRowsKernel<
+                     InputActivationsType, ExpandedActivationsType,
+                     TmaWarpSpecializedGroupedGemmInput::FpXBlockScalingType::MXFPX, false>;
+  } else if constexpr (std::is_same_v<ExpandedActivationsType, __nv_fp8_e4m3> &&
+                       std::is_same_v<InputActivationsType, __nv_fp8_e4m3>) {
+    TLLM_CHECK_WITH_INFO(!prequant_scales, "FP8 is not supported for AWQ");
+    return (quant_params.mxfp8_mxfp4.fc1.weight_block_scale ||
+            quant_params.mxfp8_mxfp8.fc1.weight_block_scale)
+               ? &expandInputRowsKernel<
+                     InputActivationsType, ExpandedActivationsType,
+                     TmaWarpSpecializedGroupedGemmInput::FpXBlockScalingType::MXFPX, false>
+               : &expandInputRowsKernel<
+                     InputActivationsType, ExpandedActivationsType,
+                     TmaWarpSpecializedGroupedGemmInput::FpXBlockScalingType::NONE, false>;
+  } else
+#endif
+#ifdef ENABLE_FP4
+      if constexpr (std::is_same_v<ExpandedActivationsType, __nv_fp4_e2m1>) {
+    TLLM_CHECK_WITH_INFO(quant_params.fp4.fc1.weight_block_scale,
+                         "NVFP4 block scaling is expected for FP4xFP4");
+    TLLM_CHECK_WITH_INFO(!prequant_scales, "NVFP4 is not supported for AWQ");
+    return dispatchNVFP44Over6Config(
+        NVFP4ExpandInputRowsKernelSelector<InputActivationsType, ExpandedActivationsType>{});
+  } else
+#endif
+  {
+    TLLM_CHECK_WITH_INFO(!prequant_scales,
+                         "w4afp8 Prequant scales provided for non-FP8 data type");
+    return &expandInputRowsKernel<InputActivationsType, ExpandedActivationsType,
+                                  TmaWarpSpecializedGroupedGemmInput::FpXBlockScalingType::NONE,
+                                  false>;
+  }
+}
+
+template <class InputActivationsType, class ExpandedActivationsType>
 void expandInputRowsKernelLauncher(
     InputActivationsType const* unpermuted_input, ExpandedActivationsType* permuted_output,
     float const* unpermuted_scales, float* permuted_scales,
@@ -1638,53 +1687,9 @@ void expandInputRowsKernelLauncher(
   int64_t const blocks = std::min(smCount * 8, std::max(num_rows * k, int64_t{1}));
   int64_t const threads = EXPAND_THREADS_PER_BLOCK;
 
-  auto func = [&]() {
-#ifdef ENABLE_FP8
-    // Always MXFP8
-    if constexpr (std::is_same_v<ExpandedActivationsType, __nv_fp8_e4m3> &&
-                  !std::is_same_v<InputActivationsType, __nv_fp8_e4m3>) {
-      TLLM_CHECK_WITH_INFO(quant_params.mxfp8_mxfp4.fc1.weight_block_scale ||
-                               quant_params.mxfp8_mxfp8.fc1.weight_block_scale || prequant_scales,
-                           "MXFP8 block scaling or prequant_scales parameters not provided");
-      return prequant_scales
-                 ? &expandInputRowsKernel<
-                       InputActivationsType, ExpandedActivationsType,
-                       TmaWarpSpecializedGroupedGemmInput::FpXBlockScalingType::NONE, true>
-                 : &expandInputRowsKernel<
-                       InputActivationsType, ExpandedActivationsType,
-                       TmaWarpSpecializedGroupedGemmInput::FpXBlockScalingType::MXFPX, false>;
-    }
-    // Could be either regular FP8 or MXFP8
-    else if constexpr (std::is_same_v<ExpandedActivationsType, __nv_fp8_e4m3> &&
-                       std::is_same_v<InputActivationsType, __nv_fp8_e4m3>) {
-      TLLM_CHECK_WITH_INFO(!prequant_scales, "FP8 is not supported for AWQ");
-      return (quant_params.mxfp8_mxfp4.fc1.weight_block_scale ||
-              quant_params.mxfp8_mxfp8.fc1.weight_block_scale)
-                 ? &expandInputRowsKernel<
-                       InputActivationsType, ExpandedActivationsType,
-                       TmaWarpSpecializedGroupedGemmInput::FpXBlockScalingType::MXFPX, false>
-                 : &expandInputRowsKernel<
-                       InputActivationsType, ExpandedActivationsType,
-                       TmaWarpSpecializedGroupedGemmInput::FpXBlockScalingType::NONE, false>;
-    } else
-#endif
-#ifdef ENABLE_FP4
-        if constexpr (std::is_same_v<ExpandedActivationsType, __nv_fp4_e2m1>) {
-      TLLM_CHECK_WITH_INFO(quant_params.fp4.fc1.weight_block_scale,
-                           "NVFP4 block scaling is expected for FP4xFP4");
-      TLLM_CHECK_WITH_INFO(!prequant_scales, "NVFP4 is not supported for AWQ");
-      return dispatchNVFP44Over6Config(
-          NVFP4ExpandInputRowsKernelSelector<InputActivationsType, ExpandedActivationsType>{});
-    } else
-#endif
-    {
-      TLLM_CHECK_WITH_INFO(!prequant_scales,
-                           "w4afp8 Prequant scales provided for non-FP8 data type");
-      return &expandInputRowsKernel<InputActivationsType, ExpandedActivationsType,
-                                    TmaWarpSpecializedGroupedGemmInput::FpXBlockScalingType::NONE,
-                                    false>;
-    }
-  }();
+  auto func =
+      selectExpandInputRowsKernel<InputActivationsType, ExpandedActivationsType>(quant_params,
+                                                                                 prequant_scales);
 
   cudaLaunchConfig_t config;
   config.gridDim = blocks;

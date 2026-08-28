@@ -126,7 +126,6 @@ def _compile_jit_cache(output_dir: Path, verbose: bool = True):
     else:
         build_dir = project_root / "build" / "aot"
 
-    # Use the centralized compilation function from aot.py
     aot.compile_and_package_modules(
         out_dir=output_dir,
         build_dir=build_dir,
