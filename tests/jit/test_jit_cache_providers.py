@@ -93,7 +93,7 @@ def provider_validation_module():
 
 def _aot_library_filename(module_name: str) -> str:
     suffix = ".dll" if platform.system() == "Windows" else ".so"
-    return f"{module_name}{suffix}"
+    return "module.dll" if suffix == ".dll" else f"{module_name}{suffix}"
 
 
 def _create_aot_module(root: Path, module_name: str) -> Path:
