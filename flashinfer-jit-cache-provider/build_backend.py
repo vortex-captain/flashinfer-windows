@@ -108,7 +108,11 @@ def _write_provider_manifest(jit_cache_dir: Path) -> None:
     modules = sorted(
         module_dir.name
         for module_dir in jit_cache_dir.iterdir()
-        if module_dir.is_dir() and (module_dir / f"{module_dir.name}{suffix}").is_file()
+        if module_dir.is_dir()
+        and (
+            module_dir
+            / ("module.dll" if suffix == ".dll" else f"{module_dir.name}{suffix}")
+        ).is_file()
     )
     if not modules:
         raise RuntimeError(

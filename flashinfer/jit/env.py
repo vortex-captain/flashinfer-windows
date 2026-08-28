@@ -306,7 +306,7 @@ def _provider_target_compatibility_score(
 def get_aot_artifacts(module_name: str) -> Tuple[AOTArtifact, ...]:
     """Resolve the best installed AOT artifact for each visible CUDA target."""
     suffix = ".dll" if platform.system() == "Windows" else ".so"
-    filename = f"{module_name}{suffix}"
+    filename = "module.dll" if suffix == ".dll" else f"{module_name}{suffix}"
     fallback_path = FLASHINFER_AOT_DIR / module_name / filename
     if fallback_path.exists():
         return (AOTArtifact("flashinfer-python", fallback_path, None),)
@@ -343,7 +343,8 @@ def get_aot_artifacts(module_name: str) -> Tuple[AOTArtifact, ...]:
 def get_aot_path(module_name: str) -> pathlib.Path:
     """Return the primary path for an AOT module, or its stable fallback path."""
     suffix = ".dll" if platform.system() == "Windows" else ".so"
-    fallback_path = FLASHINFER_AOT_DIR / module_name / f"{module_name}{suffix}"
+    filename = "module.dll" if suffix == ".dll" else f"{module_name}{suffix}"
+    fallback_path = FLASHINFER_AOT_DIR / module_name / filename
     artifacts = get_aot_artifacts(module_name)
     return artifacts[0].path if artifacts else fallback_path
 
