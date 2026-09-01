@@ -761,8 +761,8 @@ __global__ void __cluster_dims__(NumBlocksPerCluster, 1, 1) __launch_bounds__(Cl
   static constexpr int NumWarpsBlock = ClusterBlockDim / WarpSize;
   static_assert(ClusterBlockDim % WarpSize == 0);
   static_assert(ClusterBlockDim <= NumThreads);
-  __shared__ TypePacked __attribute((
-      aligned(128))) smemPackedScoreIdx[NumWarpsBlock * KernelParams::MaxNumTopExperts];
+  __shared__ TypePacked __align__(128)
+      smemPackedScoreIdx[NumWarpsBlock * KernelParams::MaxNumTopExperts];
   routingIndicesClusterKernelBody<KernelParams, BaseType, ClusterBlockDim, NumWarpsBlock>(
       params, smemPackedScoreIdx);
 }
@@ -1217,10 +1217,8 @@ __global__ void __launch_bounds__(kBlockScoresKernelBlockDim)
                   LaneTopKNumWorkerWarps <= kBlockScoresKernelBlockDim / WarpSize &&
                   LaneTopKMergeValuesPerLane <= 64 &&
                   PostprocessSupportsLaneOwnedTopK<PostProc>::value) {
-      __shared__ BaseType
-          __attribute((aligned(128))) smemIntermediateScores[LaneTopKNumIntermediate];
-      __shared__ int32_t
-          __attribute((aligned(128))) smemIntermediateExperts[LaneTopKNumIntermediate];
+      __shared__ BaseType __align__(128) smemIntermediateScores[LaneTopKNumIntermediate];
+      __shared__ int32_t __align__(128) smemIntermediateExperts[LaneTopKNumIntermediate];
 
       if (warpIdx < LaneTopKNumWorkerWarps) {
         BaseType localScores[LaneTopKValuesPerWorkerLane];
