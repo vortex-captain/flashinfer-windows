@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import math
+
 import numpy as np
 import pytest
 import torch
@@ -202,6 +204,123 @@ def _run_attention(
     torch.cuda.synchronize()
     torch.testing.assert_close(out_old, out_new, rtol=1e-2, atol=1e-2)
     torch.testing.assert_close(lse_old, lse_new, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize(
+    ("q_dtype", "kv_dtype"),
+    [
+        (torch.bfloat16, torch.float16),
+        (torch.float16, torch.bfloat16),
+    ],
+)
+@pytest.mark.parametrize("logits_soft_cap", [0.0, 30.0])
+def test_batch_attention_mixed_16bit_dtype_correctness(
+    q_dtype,
+    kv_dtype,
+    logits_soft_cap,
+):
+    device = torch.device("cuda")
+    batch_size = 3
+    page_size = 8
+    kv_lengths = [20, 27, 32]
+    query_lengths = [5, 7, 9]
+    num_qo_heads = 8
+    num_kv_heads = 2
+    head_dim = 64
+
+    pages_per_request = [(length + page_size - 1) // page_size for length in kv_lengths]
+    kv_indptr_host = [0]
+    for page_count in pages_per_request:
+        kv_indptr_host.append(kv_indptr_host[-1] + page_count)
+    qo_indptr_host = [0]
+    for query_length in query_lengths:
+        qo_indptr_host.append(qo_indptr_host[-1] + query_length)
+
+    qo_indptr = torch.tensor(qo_indptr_host, dtype=torch.int32, device=device)
+    kv_indptr = torch.tensor(kv_indptr_host, dtype=torch.int32, device=device)
+    kv_indices = torch.arange(kv_indptr_host[-1], dtype=torch.int32, device=device)
+    kv_len_arr = torch.tensor(kv_lengths, dtype=torch.int32, device=device)
+
+    torch.manual_seed(42)
+    query = torch.randn(
+        qo_indptr_host[-1],
+        num_qo_heads,
+        head_dim,
+        dtype=q_dtype,
+        device=device,
+    )
+    key_cache = torch.randn(
+        kv_indptr_host[-1],
+        page_size,
+        num_kv_heads,
+        head_dim,
+        dtype=kv_dtype,
+        device=device,
+    )
+    value_cache = torch.randn_like(key_cache)
+
+    wrapper = flashinfer.BatchAttention(kv_layout="NHD", device="cuda")
+    wrapper.plan(
+        qo_indptr=qo_indptr,
+        kv_indptr=kv_indptr,
+        kv_indices=kv_indices,
+        kv_len_arr=kv_len_arr,
+        num_qo_heads=num_qo_heads,
+        num_kv_heads=num_kv_heads,
+        head_dim_qk=head_dim,
+        head_dim_vo=head_dim,
+        page_size=page_size,
+        causal=False,
+        logits_soft_cap=logits_soft_cap,
+        q_data_type=q_dtype,
+        kv_data_type=kv_dtype,
+        use_profiler=False,
+    )
+    output, lse = wrapper.run(
+        q=query,
+        kv_cache=(key_cache, value_cache),
+        logits_soft_cap=logits_soft_cap,
+    )
+
+    group_size = num_qo_heads // num_kv_heads
+    reference_outputs = []
+    reference_lses = []
+    for request_index in range(batch_size):
+        query_start = qo_indptr_host[request_index]
+        query_end = qo_indptr_host[request_index + 1]
+        page_start = kv_indptr_host[request_index]
+        page_end = kv_indptr_host[request_index + 1]
+        query_request = query[query_start:query_end].float().transpose(0, 1)
+        key_request = (
+            key_cache[page_start:page_end]
+            .reshape(-1, num_kv_heads, head_dim)[: kv_lengths[request_index]]
+            .float()
+            .repeat_interleave(group_size, dim=1)
+            .transpose(0, 1)
+        )
+        value_request = (
+            value_cache[page_start:page_end]
+            .reshape(-1, num_kv_heads, head_dim)[: kv_lengths[request_index]]
+            .float()
+            .repeat_interleave(group_size, dim=1)
+            .transpose(0, 1)
+        )
+        scores = torch.matmul(query_request, key_request.transpose(-1, -2)) / math.sqrt(
+            head_dim
+        )
+        if logits_soft_cap > 0:
+            scores = logits_soft_cap * torch.tanh(scores / logits_soft_cap)
+        reference_outputs.append(
+            torch.matmul(torch.softmax(scores, dim=-1), value_request).transpose(0, 1)
+        )
+        reference_lses.append(
+            (torch.logsumexp(scores, dim=-1) / math.log(2)).transpose(0, 1)
+        )
+
+    reference_output = torch.cat(reference_outputs, dim=0)
+    reference_lse = torch.cat(reference_lses, dim=0)
+    torch.testing.assert_close(output.float(), reference_output, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(lse, reference_lse, rtol=1e-2, atol=1e-2)
 
 
 # -------------------------  PyTest test case  ----------------------------- #

@@ -1190,6 +1190,12 @@ __device__ __forceinline__ void compute_qk(
           *(packed2_*)&b_frag[2] = __hmul2(*(packed2_*)&b_frag[2], scale_b);
           *(packed2_*)&b_frag[3] = __hmul2(*(packed2_*)&b_frag[3], scale_b);
         }
+      } else if constexpr (!REPACK_BF16 &&
+                           !std::is_same_v<typename KTraits::DTypeQ, typename KTraits::DTypeKV>) {
+        uint32_t b_frag_kv[4];
+        k_smem->ldmatrix_m8n8x4(*k_smem_offset_r, b_frag_kv);
+        vec_cast<typename KTraits::DTypeQ, typename KTraits::DTypeKV>::cast<8>(
+            (typename KTraits::DTypeQ*)b_frag, (typename KTraits::DTypeKV*)b_frag_kv);
       } else {
         k_smem->ldmatrix_m8n8x4(*k_smem_offset_r, b_frag);
       }
@@ -1713,6 +1719,12 @@ __device__ __forceinline__ void compute_sfm_v(
             *(packed2_*)&b_frag[2] = __hmul2(*(packed2_*)&b_frag[2], scale_lo);
             *(packed2_*)&b_frag[3] = __hmul2(*(packed2_*)&b_frag[3], scale_hi);
           }
+        } else if constexpr (!REPACK_BF16 &&
+                             !std::is_same_v<typename KTraits::DTypeQ, typename KTraits::DTypeKV>) {
+          uint32_t b_frag_kv[4];
+          v_smem->ldmatrix_m8n8x4_trans(*v_smem_offset_r, b_frag_kv);
+          vec_cast<typename KTraits::DTypeQ, typename KTraits::DTypeKV>::cast<8>(
+              (typename KTraits::DTypeQ*)b_frag, (typename KTraits::DTypeKV*)b_frag_kv);
         } else {
           v_smem->ldmatrix_m8n8x4_trans(*v_smem_offset_r, b_frag);
         }
@@ -3386,6 +3398,12 @@ __device__ __forceinline__ void vosplit_compute_pv(
               *(packed2*)&b_frag[3] = __hmul2(*(packed2*)&b_frag[3], scale_hi);
             }
           }
+        } else if constexpr (!std::is_same_v<DTypeQ, DTypeKV>) {
+          const uint32_t voff = v_smem.template get_permuted_offset<UPCAST_STRIDE_V>(
+              mma_kv * 16 + lane_idx % 16, global_d * VO_COLS_PER_TILE + lane_idx / 16);
+          uint32_t b_frag_kv[4];
+          v_smem.ldmatrix_m8n8x4_trans(voff, b_frag_kv);
+          vec_cast<DTypeQ, DTypeKV>::template cast<8>((DTypeQ*)b_frag, (DTypeKV*)b_frag_kv);
         } else {
           const uint32_t voff = v_smem.template get_permuted_offset<UPCAST_STRIDE_V>(
               mma_kv * 16 + lane_idx % 16, global_d * VO_COLS_PER_TILE + lane_idx / 16);

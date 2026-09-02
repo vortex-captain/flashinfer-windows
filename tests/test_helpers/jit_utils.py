@@ -104,10 +104,6 @@ def gen_persistent_batch_attention_modules(
         head_dims,
         use_logits_soft_cap_options,
     ):
-        if q_dtype != kv_dtype:
-            if kv_dtype.itemsize > 1:
-                continue  # skip fp16/bf16 mixed precision
-
         jit_specs.append(
             flashinfer.attention.gen_batch_attention_module(
                 q_dtype,
