@@ -1249,7 +1249,7 @@ struct HolisticPlanInfo {
   }
 };
 
-template <typename IdType>
+template <typename IdType, uint32_t CTA_TILE_Q_1>
 inline cudaError_t TwoStageHolisticPlan(void* float_buffer, size_t float_workspace_size_in_bytes,
                                         void* int_buffer, void* page_locked_int_buffer,
                                         size_t int_workspace_size_in_bytes,
@@ -1259,7 +1259,7 @@ inline cudaError_t TwoStageHolisticPlan(void* float_buffer, size_t float_workspa
                                         uint32_t num_kv_heads, uint32_t head_dim, bool causal,
                                         uint32_t num_ctas_per_sm, cudaStream_t stream) {
   constexpr uint32_t NUM_TASKS = 2;
-  const uint32_t CTA_TILE_Q_SIZES[NUM_TASKS] = {128, 16};
+  const uint32_t CTA_TILE_Q_SIZES[NUM_TASKS] = {CTA_TILE_Q_1, 16};
   int num_sm = 0;
   int dev_id = 0;
 

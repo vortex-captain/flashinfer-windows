@@ -60,6 +60,7 @@ using IdType = {{ idtype }};
 
 constexpr int HEAD_DIM_QK = {{ head_dim_qk }};
 constexpr int HEAD_DIM_VO = {{ head_dim_vo }};
+constexpr int CTA_TILE_Q_1 = HEAD_DIM_VO >= 256 ? 64 : 128;
 constexpr auto POS_ENCODING_MODE = {{ pos_encoding_mode }};
 
 struct PersistentParams {

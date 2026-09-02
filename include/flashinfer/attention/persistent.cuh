@@ -662,7 +662,7 @@ struct BatchPagedAttentionPersistentConfig {
   static constexpr uint32_t NUM_WARPS_Q_2 = get_num_warps_q(CTA_TILE_Q_2);
   static constexpr uint32_t NUM_WARPS_KV_2 = get_num_warps_kv(CTA_TILE_Q_2);
   static constexpr uint32_t NUM_MMA_Q_2 = get_num_mma_q(CTA_TILE_Q_2);
-  static constexpr uint32_t NUM_MMA_KV_2 = 2;
+  static constexpr uint32_t NUM_MMA_KV_2 = HEAD_DIM_VO >= 256 ? 1 : 2;
   using KTraits2 = KernelTraits<MASK_MODE, CTA_TILE_Q_2, NUM_MMA_Q_2, NUM_MMA_KV_2, NUM_MMA_D_QK,
                                 NUM_MMA_D_VO, NUM_WARPS_Q_2, NUM_WARPS_KV_2, PosEncodingMode::kNone,
                                 DTypeQ, DTypeKV, DTypeO, float, IdType, AttentionVariant>;
