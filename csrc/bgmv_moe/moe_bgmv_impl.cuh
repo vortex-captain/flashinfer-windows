@@ -328,18 +328,12 @@ void moe_bgmv_shrink_sliced(out_T* __restrict__ Y, const in_T* __restrict__ X,
   constexpr int gy = (feat_out + RT - 1) / RT;
   constexpr size_t fvs = MoeShrinkKernelConfig::vec_size;
 
-  // Runtime: detect sm_80+ for extended shared memory
+  // Select the deepest decode pipeline that fits the current device.
   int dev;
   cudaGetDevice(&dev);
-  int sm_major = 0;
-  cudaDeviceGetAttribute(&sm_major, cudaDevAttrComputeCapabilityMajor, dev);
-  const bool extended = (sm_major >= 9);
+  int max_smem_per_block = 0;
+  cudaDeviceGetAttribute(&max_smem_per_block, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev);
   const bool decode = (num_pairs <= MoeShrinkKernelConfig::decode_threshold);
-
-  const int ppb = (extended && decode) ? MoeShrinkKernelConfig::pairs_per_block_decode
-                                       : MoeShrinkKernelConfig::pairs_per_block_prefill;
-  const int nstg = (extended && decode) ? MoeShrinkKernelConfig::num_stages_extended
-                                        : MoeShrinkKernelConfig::num_stages_default;
 
 #define LAUNCH(PPB, NSTG, VS)                                                                  \
   do {                                                                                         \
@@ -358,13 +352,31 @@ void moe_bgmv_shrink_sliced(out_T* __restrict__ Y, const in_T* __restrict__ X,
                                                     num_tokens, lora_stride, scale);           \
   } while (0)
 
-#define DISPATCH(VS)             \
-  do {                           \
-    if (ppb == 4 && nstg == 3) { \
-      LAUNCH(4, 3, VS);          \
-    } else {                     \
-      LAUNCH(1, 2, VS);          \
-    }                            \
+#define DISPATCH(VS)                                                                  \
+  do {                                                                                \
+    constexpr size_t ts = cfg_tx * cfg_ty * (VS);                                     \
+    constexpr size_t decode_shmem_3 =                                                 \
+        MoeShrinkKernelConfig::num_stages_extended *                                  \
+            MoeShrinkKernelConfig::pairs_per_block_decode * ts * sizeof(in_T) +       \
+        MoeShrinkKernelConfig::num_stages_extended *                                  \
+            MoeShrinkKernelConfig::pairs_per_block_decode * RT * ts * sizeof(W_T) +   \
+        MoeShrinkKernelConfig::pairs_per_block_decode * RT * cfg_ty * sizeof(float);  \
+    constexpr size_t decode_shmem_2 =                                                 \
+        MoeShrinkKernelConfig::num_stages_default *                                   \
+            MoeShrinkKernelConfig::pairs_per_block_decode * ts * sizeof(in_T) +       \
+        MoeShrinkKernelConfig::num_stages_default *                                   \
+            MoeShrinkKernelConfig::pairs_per_block_decode * RT * ts * sizeof(W_T) +   \
+        MoeShrinkKernelConfig::pairs_per_block_decode * RT * cfg_ty * sizeof(float);  \
+    if (decode && decode_shmem_3 <= static_cast<size_t>(max_smem_per_block)) {        \
+      LAUNCH(MoeShrinkKernelConfig::pairs_per_block_decode,                           \
+             MoeShrinkKernelConfig::num_stages_extended, VS);                         \
+    } else if (decode && decode_shmem_2 <= static_cast<size_t>(max_smem_per_block)) { \
+      LAUNCH(MoeShrinkKernelConfig::pairs_per_block_decode,                           \
+             MoeShrinkKernelConfig::num_stages_default, VS);                          \
+    } else {                                                                          \
+      LAUNCH(MoeShrinkKernelConfig::pairs_per_block_prefill,                          \
+             MoeShrinkKernelConfig::num_stages_default, VS);                          \
+    }                                                                                 \
   } while (0)
 
   if constexpr (feat_in % (fvs * cfg_tx) == 0) {
