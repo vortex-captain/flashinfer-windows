@@ -15,6 +15,7 @@ limitations under the License.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,18 @@ from build_utils import get_git_version
 
 _root = Path(__file__).parent.resolve()
 _data_dir = _root / "flashinfer" / "data"
+_SPDLOG_FORMAT_HEADER = Path("include/spdlog/fmt/bundled/format.h")
+_SPDLOG_ROUNDING_THRESHOLDS = (
+    '  return U"\\x9999999a\\x828f5c29\\x80418938\\x80068db9\\x8000a7c6\\x800010c7"\n'
+    '         U"\\x800001ae\\x8000002b"[index];'
+)
+_SPDLOG_ROUNDING_THRESHOLDS_WINDOWS = (
+    "  return static_cast<uint32_t>(\n"
+    '             u"\\x9999\\x828f\\x8041\\x8006\\x8000\\x8000\\x8000\\x8000"[index])\n'
+    "             << 16u |\n"
+    "         static_cast<uint32_t>(\n"
+    '             u"\\x999a\\x5c29\\x8938\\x8db9\\xa7c6\\x10c7\\x01ae\\x002b"[index]);'
+)
 
 
 # moe_ep build infra. Both EP backends are ON BY DEFAULT since the moe_ep
@@ -1075,4 +1088,19 @@ def build_sdist(sdist_directory, config_settings=None):
 
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     _prepare_for_wheel()
-    return orig.build_wheel(wheel_directory, config_settings, metadata_directory)
+    if os.name != "nt":
+        return orig.build_wheel(wheel_directory, config_settings, metadata_directory)
+
+    header = _root / "3rdparty" / "spdlog" / _SPDLOG_FORMAT_HEADER
+    original = header.read_bytes()
+    content = original.decode("utf-8")
+    newline = "\r\n" if "\r\n" in content else "\n"
+    patched = content.replace(
+        _SPDLOG_ROUNDING_THRESHOLDS.replace("\n", newline),
+        _SPDLOG_ROUNDING_THRESHOLDS_WINDOWS.replace("\n", newline),
+    ).encode("utf-8")
+    try:
+        header.write_bytes(patched)
+        return orig.build_wheel(wheel_directory, config_settings, metadata_directory)
+    finally:
+        header.write_bytes(original)

@@ -431,20 +431,22 @@ void moe_bgmv_expand_sliced(float* __restrict__ Y, const in_T* __restrict__ X,
 // Instantiate both PER_PAIR_INPUT values.
 #define INST_MOE_BGMV_SHRINK_SLICED(feat_in, feat_out, in_T, out_T, W_T)                   \
   template void moe_bgmv_shrink_sliced<feat_in, feat_out, in_T, out_T, W_T, false>(        \
-      out_T*, const in_T*, W_T**, const int64_t*, const int64_t*, const int64_t*, int64_t, \
-      int64_t, int64_t, int64_t, int64_t, float);                                          \
+      out_T* __restrict__, const in_T* __restrict__, W_T** __restrict__, const int64_t*,    \
+      const int64_t*, const int64_t*, int64_t, int64_t, int64_t, int64_t, int64_t, float); \
   template void moe_bgmv_shrink_sliced<feat_in, feat_out, in_T, out_T, W_T, true>(         \
-      out_T*, const in_T*, W_T**, const int64_t*, const int64_t*, const int64_t*, int64_t, \
-      int64_t, int64_t, int64_t, int64_t, float);
+      out_T* __restrict__, const in_T* __restrict__, W_T** __restrict__, const int64_t*,    \
+      const int64_t*, const int64_t*, int64_t, int64_t, int64_t, int64_t, int64_t, float);
 
 // Instantiate both FINALIZE values.
 #define INST_MOE_BGMV_EXPAND_SLICED(feat_in, feat_out, in_T, W_T)                               \
   template void moe_bgmv_expand_sliced<feat_in, feat_out, in_T, W_T, true>(                     \
-      float*, const in_T*, W_T**, const int64_t*, const int64_t*, const int64_t*, const float*, \
-      const int64_t*, int64_t, int64_t, int64_t, int64_t, int32_t, int64_t, int64_t, float);    \
+      float* __restrict__, const in_T* __restrict__, W_T** __restrict__, const int64_t*,         \
+      const int64_t*, const int64_t*, const float*, const int64_t*, int64_t, int64_t, int64_t,  \
+      int64_t, int32_t, int64_t, int64_t, float);                                               \
   template void moe_bgmv_expand_sliced<feat_in, feat_out, in_T, W_T, false>(                    \
-      float*, const in_T*, W_T**, const int64_t*, const int64_t*, const int64_t*, const float*, \
-      const int64_t*, int64_t, int64_t, int64_t, int64_t, int32_t, int64_t, int64_t, float);
+      float* __restrict__, const in_T* __restrict__, W_T** __restrict__, const int64_t*,         \
+      const int64_t*, const int64_t*, const float*, const int64_t*, int64_t, int64_t, int64_t,  \
+      int64_t, int32_t, int64_t, int64_t, float);
 
 #define INST_MOE_BGMV_TWOSIDE(in_T, out_T, W_T, narrow, wide) \
   INST_MOE_BGMV_SHRINK_SLICED(wide, narrow, in_T, out_T, W_T) \
