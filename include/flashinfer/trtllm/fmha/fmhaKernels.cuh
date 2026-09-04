@@ -17,6 +17,7 @@
 #pragma once
 
 #include <cuda.h>
+#include <cuda/std/bit>
 
 #include <cfloat>
 #include <cstdint>
@@ -26,6 +27,10 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#ifdef _MSC_VER
+#include <bit>
+#include <intrin.h>
+#endif
 
 #include "../../exception.h"
 #include "../../utils.cuh"
@@ -451,7 +456,9 @@ class TllmGenFmhaKernel {
     auto sageParamEncode = [](int blockSize) -> int32_t {
       FLASHINFER_CHECK((blockSize & (blockSize - 1)) == 0,
                        "SageAttention block size must be a power of 2.");
-      return blockSize == 0 ? 0 : __builtin_ctz(static_cast<unsigned int>(blockSize));
+      return blockSize == 0
+                 ? 0
+                 : cuda::std::countr_zero(static_cast<unsigned int>(blockSize));
     };
     kernelParams.ptrSageAttnSfsQ = params.ptrSageAttnSfsQ;
     kernelParams.ptrSageAttnSfsK = params.ptrSageAttnSfsK;
@@ -552,8 +559,34 @@ class TllmGenFmhaKernel {
     }
     // acc *= x; false on int64 overflow.
     auto const mulTo = [](int64_t& acc, int64_t x) {
+#ifdef _MSC_VER
+#ifdef _M_X64
+      return !_mul_overflow_i64(acc, x, &acc);
+#else
+      int64_t const high = __mulh(acc, x);
+      uint64_t const low = static_cast<uint64_t>(acc) * static_cast<uint64_t>(x);
+      acc = std::bit_cast<int64_t>(low);
+      // A fitting signed product has only sign extension in its high half.
+      return high == (acc < 0 ? -1 : 0);
+#endif
+#else
       return !__builtin_mul_overflow(acc, x, &acc);
+#endif
     };
+#ifdef _MSC_VER
+    auto const addOverflow = [](int64_t left, int64_t right, int64_t* result) {
+#ifdef _M_X64
+      return _add_overflow_i64(0, left, right, result) != 0;
+#else
+      if ((right > 0 && left > INT64_MAX - right) ||
+          (right < 0 && left < INT64_MIN - right)) {
+        return true;
+      }
+      *result = left + right;
+      return false;
+#endif
+    };
+#endif
     int64_t numCtas = ctaLaunchParams.mNumCtasX;
     if (!mulTo(numCtas, ctaLaunchParams.mNumCtasY) || !mulTo(numCtas, ctaLaunchParams.mNumCtasZ) ||
         numCtas > INT32_MAX) {
@@ -567,7 +600,11 @@ class TllmGenFmhaKernel {
         !mulTo(partialOBytes, kernelMeta.mHeadDimPerCtaV) ||
         !mulTo(partialOBytes, kernelMeta.m2CtaMma ? 2 : 1) ||
         !mulTo(partialOBytes, /*bytesPerPartialElt=*/2) ||
+#ifdef _MSC_VER
+        addOverflow(statsBytes, partialOBytes, &bytes) ||
+#else
         __builtin_add_overflow(statsBytes, partialOBytes, &bytes) ||
+#endif
         static_cast<uint64_t>(bytes) > params.mMultiCtasKvScratchBytes) {
       return false;
     }
