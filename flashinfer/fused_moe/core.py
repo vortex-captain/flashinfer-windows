@@ -923,6 +923,7 @@ def get_cutlass_fused_moe_module(backend: str = "100", use_fast_build: bool = Fa
         use_wfp4afp8_humming: bool = False,
         profile_ids: Optional[List[int]] = None,
         workspace_buffer: Optional[torch.Tensor] = None,
+        fc1_use_per_expert_act_scale: Optional[bool] = None,
     ) -> List[torch.Tensor]:
         if enable_pdl is None:
             enable_pdl = device_support_pdl(input.device)
@@ -993,11 +994,20 @@ def get_cutlass_fused_moe_module(backend: str = "100", use_fast_build: bool = Fa
                 )
             gemm_tactic_1, gemm_tactic_2 = profile_ids
 
-        run_moe = (
-            moe_runner.fused_moe_runner.run_moe_min_latency
-            if min_latency_mode
-            else moe_runner.fused_moe_runner.run_moe
-        )
+        if fc1_use_per_expert_act_scale is None:
+            run_moe = (
+                moe_runner.fused_moe_runner.run_moe_min_latency
+                if min_latency_mode
+                else moe_runner.fused_moe_runner.run_moe
+            )
+        else:
+            # Keep the legacy FFI signatures unchanged for existing prebuilt modules.
+            run_moe = functools.partial(
+                moe_runner.fused_moe_runner.run_moe_min_latency_with_fc1_scale_mode
+                if min_latency_mode
+                else moe_runner.fused_moe_runner.run_moe_with_fc1_scale_mode,
+                fc1_use_per_expert_act_scale,
+            )
         num_active_experts_per_node = torch.empty(
             (1,), dtype=torch.int32, device=input.device
         )
@@ -1097,6 +1107,7 @@ def get_cutlass_fused_moe_module(backend: str = "100", use_fast_build: bool = Fa
         use_wfp4afp8_humming: bool = False,
         profile_ids: Optional[List[int]] = None,
         workspace_buffer: Optional[torch.Tensor] = None,
+        fc1_use_per_expert_act_scale: Optional[bool] = None,
     ) -> List[torch.Tensor]:
         seq_len = input.shape[0]
         hidden_size = fc2_expert_weights.shape[1]
@@ -1225,6 +1236,7 @@ def cutlass_fused_moe(
     use_fused_finalize: bool = True,
     profile_ids: Optional[List[int]] = None,
     workspace_buffer: Optional[torch.Tensor] = None,
+    fc1_use_per_expert_act_scale: Optional[bool] = None,
 ) -> torch.Tensor:
     """Compute a Mixture of Experts (MoE) layer using CUTLASS backend.
 
@@ -1391,6 +1403,19 @@ def cutlass_fused_moe(
         their own buffer. A buffer sized for the maximum token count is valid for all
         smaller counts on the same call.
 
+    fc1_use_per_expert_act_scale : Optional[bool]
+        Override the NVFP4 GEMM1 activation-global-scale interpretation only.
+        ``None`` preserves the existing rule: a scalar is shared and a 1-D tensor
+        is per-expert. ``False`` uses element zero as the shared scale, including
+        when the caller stores that scale in an expert-length tensor. The caller
+        must ensure this shared scale matches the input quantization and GEMM1
+        dequantization scales; tensor values are not inspected or modified.
+        ``True`` selects per-expert scaling and requires an expert-length 1-D
+        tensor. Per-expert FC1 scaling remains unsupported for prequantized inputs.
+        FC2 scaling, workspace sizing, and tactic selection are unchanged.
+        Explicit overrides require a native module built with FC1 scale-mode
+        support; omitting the override retains the legacy native entry point.
+
     Returns
     -------
     out: torch.Tensor
@@ -1486,6 +1511,7 @@ def cutlass_fused_moe(
             use_wfp4afp8_humming=use_wfp4afp8_humming,
             profile_ids=profile_ids,
             workspace_buffer=workspace_buffer,
+            fc1_use_per_expert_act_scale=fc1_use_per_expert_act_scale,
         )
 
 
