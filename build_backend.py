@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from setuptools import build_meta as orig
-from build_utils import get_git_version
+from build_utils import apply_cutlass_patches, get_git_version
 
 _root = Path(__file__).parent.resolve()
 _data_dir = _root / "flashinfer" / "data"
@@ -1076,6 +1076,8 @@ def write_if_different(path: Path, content: str) -> None:
 
 
 def _create_data_dir(use_symlinks=True):
+    # Both source packaging and AOT use this populated CUTLASS checkout.
+    apply_cutlass_patches(_root / "3rdparty" / "cutlass")
     _data_dir.mkdir(parents=True, exist_ok=True)
 
     def ln(source: str, target: str) -> None:
