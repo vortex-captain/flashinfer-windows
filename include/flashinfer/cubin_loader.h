@@ -33,8 +33,15 @@
 // Callback into the python function that will get us the requested cubin.
 void (*callbackGetCubin)(const char* path, const char* sha256) = nullptr;
 
+#if defined(_WIN32)
+#define FLASHINFER_CUBIN_LOADER_EXPORT __declspec(dllexport)
+#else
+#define FLASHINFER_CUBIN_LOADER_EXPORT
+#endif
+
 // Set the python callback, called by the python code using ctypes.
-extern "C" void FlashInferSetCubinCallback(void (*callback)(const char* path, const char* sha256)) {
+extern "C" FLASHINFER_CUBIN_LOADER_EXPORT void FlashInferSetCubinCallback(
+    void (*callback)(const char* path, const char* sha256)) {
   callbackGetCubin = callback;
 }
 
@@ -43,7 +50,8 @@ extern "C" void FlashInferSetCubinCallback(void (*callback)(const char* path, co
 thread_local std::string current_cubin;
 
 // Called by the callback to set the current cubin.
-extern "C" void FlashInferSetCurrentCubin(const char* binary, int size) {
+extern "C" FLASHINFER_CUBIN_LOADER_EXPORT void FlashInferSetCurrentCubin(
+    const char* binary, int size) {
   current_cubin = std::string(binary, size);
 }
 
@@ -56,3 +64,5 @@ std::string getCubin(const std::string& name, const std::string& sha256) {
   callbackGetCubin(name.c_str(), sha256.c_str());
   return current_cubin;
 }
+
+#undef FLASHINFER_CUBIN_LOADER_EXPORT

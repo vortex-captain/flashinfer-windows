@@ -178,7 +178,15 @@ def compute_routing(
 
 
 def torch_moe_nvfp4(
-    a, w1, w2, topk, topk_weight, topk_ids, activation_type, swiglu_limit=None
+    a,
+    w1,
+    w2,
+    topk,
+    topk_weight,
+    topk_ids,
+    activation_type,
+    swiglu_limit=None,
+    fc2_act_global_scale=None,
 ):
     B, D = a.shape
     a = a.view(B, -1, D).repeat(1, topk, 1).reshape(-1, D)
@@ -223,7 +231,12 @@ def torch_moe_nvfp4(
         mask = topk_ids == i
         if mask.sum():
             inter = act(w1[i], mask)
-            inter_gs = torch.tensor(1.0).cuda()
+            if fc2_act_global_scale is None:
+                inter_gs = torch.tensor(1.0).cuda()
+            elif fc2_act_global_scale.ndim == 0:
+                inter_gs = fc2_act_global_scale
+            else:
+                inter_gs = fc2_act_global_scale[i]
             inter_q, inter_blockscale = fp4_quantize(inter, inter_gs)
             inter = dequantize_nvfp4_to_dtype(
                 inter_q,
@@ -726,6 +739,7 @@ def test_moe_nvfp4(
     quantized_input,
     activation_type,
     use_4over6,
+    fc1_use_per_expert_act_scale=None,
 ):
     # Skip invalid configurations
     if top_k > num_experts:
@@ -792,6 +806,8 @@ def test_moe_nvfp4(
     ).cuda()
     a1_gs = torch.tensor(1.0, device="cuda", dtype=torch.float32)
     a2_gs = torch.tensor(1.0, device="cuda", dtype=torch.float32)
+    if fc1_use_per_expert_act_scale is not None:
+        a2_gs = torch.linspace(0.5, 2.0, e, device="cuda", dtype=torch.float32)
     router_logits = torch.randn(m, e, dtype=otype).cuda()
     routing_weights, selected_experts = compute_routing(router_logits, top_k)
 
@@ -805,7 +821,7 @@ def test_moe_nvfp4(
     flash_output = torch.zeros_like(x)
 
     quant_scales = [
-        a1_gs,
+        a1_gs if fc1_use_per_expert_act_scale is None else a1_gs.repeat(e),
         w1_blockscale.view(torch.int32),
         1.0 / (a1_gs * w1_gs),
         a2_gs,
@@ -828,7 +844,28 @@ def test_moe_nvfp4(
         output=flash_output,
         activation_type=activation_type,
         swiglu_limit=swiglu_limit,
+        fc1_use_per_expert_act_scale=fc1_use_per_expert_act_scale,
+        use_fused_finalize=fc1_use_per_expert_act_scale is None,
     )
+
+    if fc1_use_per_expert_act_scale is not None:
+        baseline_scales = list(quant_scales)
+        baseline_scales[0] = a1_gs
+        baseline_output = torch.empty_like(flash_output)
+        fused_moe.cutlass_fused_moe(
+            hidden_states,
+            selected_experts.to(torch.int),
+            routing_weights,
+            w1_q.contiguous().view(torch.long),
+            w2_q.contiguous().view(torch.long),
+            otype,
+            quant_scales=baseline_scales,
+            input_sf=input_sf,
+            output=baseline_output,
+            activation_type=activation_type,
+            use_fused_finalize=False,
+        )
+        torch.testing.assert_close(flash_output, baseline_output, rtol=1e-3, atol=1e-3)
 
     # Ref check
     a_fp4, a_scale_interleaved = fp4_quantize(x, a1_gs)
@@ -872,8 +909,33 @@ def test_moe_nvfp4(
         selected_experts,
         activation_type,
         swiglu_limit=7.0 if activation_type == ActivationType.SwigluStep else None,
+        fc2_act_global_scale=a2_gs,
     )
     torch.testing.assert_close(ref_output, flash_output, rtol=2e-1, atol=2e-1)
+
+
+@pytest.mark.parametrize(
+    "quantized_input, fc1_use_per_expert_act_scale",
+    [(False, False), (True, False), (False, True)],
+)
+@pytest.mark.skipif(
+    torch.cuda.get_device_capability()[0] not in [10, 11, 12],
+    reason="NVFP4 requires SM100 or newer",
+)
+def test_moe_nvfp4_fc1_scale_mode(quantized_input, fc1_use_per_expert_act_scale):
+    test_moe_nvfp4(
+        batch_size=32,
+        hidden_size=256,
+        num_experts=4,
+        top_k=2,
+        intermediate_size=256,
+        otype=torch.bfloat16,
+        wtype=torch.float8_e4m3fn,
+        quantized_input=quantized_input,
+        activation_type=ActivationType.Swiglu,
+        use_4over6=False,
+        fc1_use_per_expert_act_scale=fc1_use_per_expert_act_scale,
+    )
 
 
 @pytest.mark.parametrize("batch_size", BATCH_SIZES)

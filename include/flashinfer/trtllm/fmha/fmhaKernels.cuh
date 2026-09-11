@@ -17,6 +17,7 @@
 #pragma once
 
 #include <cuda.h>
+#include <cuda/std/bit>
 
 #include <cfloat>
 #include <cstdint>
@@ -326,7 +327,9 @@ class TllmGenFmhaKernel {
     auto sageParamEncode = [](int blockSize) -> int32_t {
       FLASHINFER_CHECK((blockSize & (blockSize - 1)) == 0,
                        "SageAttention block size must be a power of 2.");
-      return blockSize == 0 ? 0 : __builtin_ctz(static_cast<unsigned int>(blockSize));
+      return blockSize == 0
+                 ? 0
+                 : cuda::std::countr_zero(static_cast<unsigned int>(blockSize));
     };
     kernelParams.ptrSageAttnSfsQ = params.ptrSageAttnSfsQ;
     kernelParams.ptrSageAttnSfsK = params.ptrSageAttnSfsK;
