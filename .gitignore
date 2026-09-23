@@ -12,6 +12,9 @@ docs/generated/
 flashinfer/_build_meta.py
 flashinfer/data/
 flashinfer/jit/aot_config.py
+aot-ops/
+aot/
+src/generated/
 csrc/aot_default_additional_params.h
 flashinfer/trtllm/gemm/trtllmGen_gemm_export
 flashinfer/trtllm/batched_gemm/trtllmGen_bmm_export
@@ -41,6 +44,7 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
+/build
 develop-eggs/
 dist/
 downloads/
@@ -201,3 +205,4 @@ cython_debug/
 .cursor/
 docs/tutorials/generated/
 docs/sg_execution_times.rst
+*/compiled_cache.db

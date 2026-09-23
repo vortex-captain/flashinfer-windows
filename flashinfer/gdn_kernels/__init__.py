@@ -63,6 +63,7 @@ except (ImportError, RuntimeError):
     _has_blackwell_prefill = False
     chunk_gated_delta_rule_sm100 = None  # type: ignore
 
+
 __all__ = [
     "gated_delta_rule",
     "gated_delta_rule_mtp",
