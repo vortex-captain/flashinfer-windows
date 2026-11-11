@@ -36,12 +36,43 @@ class DebugConfig {
 };
 
 #if defined(_WIN32)
-#define TLLM_LIKELY(x) (__assume((x) == 1), (x))
-#define TLLM_UNLIKELY(x) (__assume((x) == 0), (x))
+#define TLLM_LIKELY(x) (x)
+#define TLLM_UNLIKELY(x) (x)
+
+#define TLLM_CHECK(val)                                                  \
+  do {                                                                   \
+    if (static_cast<bool>(val)) [[likely]] {                             \
+    } else [[unlikely]] {                                                \
+      tensorrt_llm::common::throwRuntimeError(__FILE__, __LINE__, #val); \
+    }                                                                    \
+  } while (0)
+
+#define TLLM_CHECK_WITH_INFO(val, info, ...)                                                      \
+  do {                                                                                            \
+    if (static_cast<bool>(val)) [[likely]] {                                                      \
+    } else [[unlikely]] {                                                                         \
+      tensorrt_llm::common::throwRuntimeError(__FILE__, __LINE__,                                 \
+                                              tensorrt_llm::common::fmtstr(info, ##__VA_ARGS__)); \
+    }                                                                                             \
+  } while (0)
+
+#define TLLM_CHECK_DEBUG(val)                              \
+  do {                                                     \
+    if (DebugConfig::isCheckDebugEnabled()) [[unlikely]] { \
+      TLLM_CHECK(val);                                     \
+    }                                                      \
+  } while (0)
+
+#define TLLM_CHECK_DEBUG_WITH_INFO(val, info, ...)         \
+  do {                                                     \
+    if (DebugConfig::isCheckDebugEnabled()) [[unlikely]] { \
+      TLLM_CHECK_WITH_INFO(val, info, ##__VA_ARGS__);      \
+    }                                                      \
+  } while (0)
+
 #else
 #define TLLM_LIKELY(x) __builtin_expect((x), 1)
 #define TLLM_UNLIKELY(x) __builtin_expect((x), 0)
-#endif
 
 #define TLLM_CHECK(val)                                                              \
   do {                                                                               \
@@ -74,6 +105,8 @@ class DebugConfig {
             __FILE__, __LINE__, tensorrt_llm::common::fmtstr(info, ##__VA_ARGS__)); \
     }                                                                               \
   } while (0)
+
+#endif
 
 #define TLLM_THROW(...)                    \
   do {                                     \
