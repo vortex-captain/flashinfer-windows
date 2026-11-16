@@ -238,6 +238,11 @@ if platform.system() == "Windows":
             os.path.join(dll_bin_path, f"cudart64_{cudart_version}.dll"),
             mode=ctypes.RTLD_GLOBAL,
         )
+        # cuDNN frontend otherwise probes Linux libcudart.so names on Windows.
+        os.environ.setdefault(
+            "CUDNN_FRONTEND_CUDART_LIB_NAME",
+            os.path.join(dll_bin_path, f"cudart64_{cudart_version}.dll"),
+        )
     else:
         raise ValueError(
             "CUDA_LIB_PATH is not set. "
